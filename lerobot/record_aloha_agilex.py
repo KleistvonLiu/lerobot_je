@@ -127,6 +127,7 @@ class DatasetRecordConfig:
 @dataclass
 class RecordConfig:
     robot: RobotConfig
+    # robot2: RobotConfig
     dataset: DatasetRecordConfig
     # Whether to control the robot with a teleoperator
     teleop: TeleoperatorConfig | None = None
@@ -235,11 +236,15 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         _init_rerun(session_name="recording")
 
     robot = make_robot_from_config(cfg.robot)
+    # robot2 = make_robot_from_config(cfg.robot2)
     print("here")
     action_features = hw_to_dataset_features(robot.action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
     dataset_features = {**action_features, **obs_features}
-
+    print(action_features)
+    print(obs_features)
+    print(dataset_features)
+    exit(1)
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.dataset.repo_id,
