@@ -37,6 +37,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pformat
+from typing import Any
 
 import numpy as np
 import rerun as rr
@@ -126,8 +127,8 @@ class DatasetRecordConfig:
 
 @dataclass
 class RecordConfig:
-    robot: RobotConfig
-    # robot2: RobotConfig
+    robot1: RobotConfig
+    robot2: RobotConfig
     dataset: DatasetRecordConfig
     # Whether to control the robot with a teleoperator
     teleop: TeleoperatorConfig | None = None
@@ -159,7 +160,8 @@ class RecordConfig:
 
 @safe_stop_image_writer
 def record_loop(
-    robot: Robot,
+    robot1: Robot,
+    robot2: Robot,
     events: dict,
     fps: int,
     dataset: LeRobotDataset | None = None,
@@ -167,6 +169,7 @@ def record_loop(
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
+    action_features: dict[str, Any] | None = None,
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -180,7 +183,9 @@ def record_loop(
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
-        observation = robot.get_observation()
+        observation1 = robot1.get_observation()
+        observation2 = robot2.get_observation()
+        observation = {**observation1, **observation2}
 
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
@@ -192,11 +197,11 @@ def record_loop(
                 get_safe_torch_device(policy.config.device),
                 policy.config.use_amp,
                 task=single_task,
-                robot_type=robot.robot_type,
+                robot_type=robot1.robot_type,
             )
-            action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
+            action = {key: action_values[i].item() for i, key in enumerate(action_features)}
         else:
-            action = robot.get_leader_action()
+            action = {**robot1.get_leader_action(), **robot2.get_leader_action()}
 
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset.
@@ -235,28 +240,32 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     if cfg.display_data:
         _init_rerun(session_name="recording")
 
-    robot = make_robot_from_config(cfg.robot)
-    # robot2 = make_robot_from_config(cfg.robot2)
+    robot1 = make_robot_from_config(cfg.robot1)
+    robot2 = make_robot_from_config(cfg.robot2)
     print("here")
-    action_features = hw_to_dataset_features(robot.action_features, "action", cfg.dataset.video)
-    obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
+    merged_action_features = {**robot1.action_features, ** robot2.action_features}
+    merged_observation_features = {**robot1.observation_features, ** robot2.observation_features}
+    action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
+    obs_features = hw_to_dataset_features(merged_observation_features, "observation", cfg.dataset.video)
     dataset_features = {**action_features, **obs_features}
-    print(action_features)
-    print(obs_features)
-    print(dataset_features)
-    exit(1)
+    # print(merged_action_features)
+    # print(merged_observation_features)
+    # print(action_features)
+    # print(obs_features)
+    # print(dataset_features)
+    # exit(1)
     if cfg.resume:
         dataset = LeRobotDataset(
             cfg.dataset.repo_id,
             root=cfg.dataset.root,
         )
 
-        if hasattr(robot, "cameras") and len(robot.cameras) > 0:
+        if hasattr(robot1, "cameras") and len(robot1.cameras) > 0:
             dataset.start_image_writer(
                 num_processes=cfg.dataset.num_image_writer_processes,
-                num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
+                num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot1.cameras),
             )
-        sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
+        sanity_check_dataset_robot_compatibility(dataset, robot1, cfg.dataset.fps, dataset_features)
     else:
         # Create empty dataset or load existing saved episodes
         sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
@@ -264,24 +273,26 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             cfg.dataset.repo_id,
             cfg.dataset.fps,
             root=cfg.dataset.root,
-            robot_type=robot.name,
+            robot_type=robot1.name,
             features=dataset_features,
             use_videos=cfg.dataset.video,
             image_writer_processes=cfg.dataset.num_image_writer_processes,
-            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
+            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot1.cameras),
         )
 
     # Load pretrained policy
     policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
 
-    robot.connect()
+    robot1.connect()
+    robot2.connect()
 
     listener, events = init_keyboard_listener()
 
     for recorded_episodes in range(cfg.dataset.num_episodes):
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
         record_loop(
-            robot=robot,
+            robot1=robot1,
+            robot2=robot2,
             events=events,
             fps=cfg.dataset.fps,
             policy=policy,
@@ -298,7 +309,8 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         ):
             log_say("Reset the environment", cfg.play_sounds)
             record_loop(
-                robot=robot,
+                robot1=robot1,
+                robot2=robot2,
                 events=events,
                 fps=cfg.dataset.fps,
                 control_time_s=cfg.dataset.reset_time_s,
@@ -320,7 +332,8 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
 
-    robot.disconnect()
+    robot1.disconnect()
+    robot2.disconnect()
 
     if not is_headless() and listener is not None:
         listener.stop()

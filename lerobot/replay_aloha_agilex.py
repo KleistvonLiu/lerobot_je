@@ -66,10 +66,12 @@ class DatasetReplayConfig:
 
 @dataclass
 class ReplayConfig:
-    robot: RobotConfig
+    robot1: RobotConfig
+    robot2: RobotConfig
     dataset: DatasetReplayConfig
     # Use vocal synthesis to read events.
     play_sounds: bool = True
+    replay_mode: int = 0
 
 
 @draccus.wrap()
@@ -77,26 +79,37 @@ def replay(cfg: ReplayConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
 
-    robot = make_robot_from_config(cfg.robot)
+    robot1 = make_robot_from_config(cfg.robot1)
+    robot2 = make_robot_from_config(cfg.robot2)
     dataset = LeRobotDataset(cfg.dataset.repo_id, root=cfg.dataset.root, episodes=[cfg.dataset.episode])
-    actions = dataset.hf_dataset.select_columns("action")
-    robot.connect()
+    # actions = dataset.hf_dataset.select_columns("action")
+    replay_type = ''
+    if cfg.replay_mode == 0:
+        replay_type = "action"
+    else:
+        replay_type = "observation.state"
+    actions = dataset.hf_dataset.select_columns(replay_type)
+    robot1.connect()
+    robot2.connect()
 
     log_say("Replaying episode", cfg.play_sounds, blocking=True)
     for idx in range(dataset.num_frames):
         start_episode_t = time.perf_counter()
 
-        action_array = actions[idx]["action"]
+        action_array = actions[idx][replay_type]
         action = {}
-        for i, name in enumerate(dataset.features["action"]["names"]):
+        for i, name in enumerate(dataset.features[replay_type]["names"]):
             action[name] = action_array[i]
-
-        robot.send_action(action)
+        # print(action)
+        # exit(1)
+        robot1.send_action(action)
+        robot2.send_action(action)
 
         dt_s = time.perf_counter() - start_episode_t
         busy_wait(1 / dataset.fps - dt_s)
 
-    robot.disconnect()
+    robot1.disconnect()
+    robot2.disconnect()
 
 
 if __name__ == "__main__":
