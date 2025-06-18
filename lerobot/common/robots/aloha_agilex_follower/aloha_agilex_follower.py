@@ -53,7 +53,7 @@ class AlohaAgileXFollower(Robot):
 
     @property
     def _motors_ft(self) -> dict[str, type]:
-        return {f"joint{i}.pos": float for i in range(7)}
+        return {self.id + f".joint{i}.pos": float for i in range(7)}
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
@@ -112,11 +112,11 @@ class AlohaAgileXFollower(Robot):
         # Read arm position
         start = time.perf_counter()
         obs_dict = {
-            f"joint{i}.pos":
-                (getattr(self.piper.GetArmJointMsgs().joint_state,f"joint_{i + 1}"))
+            self.id + f".joint{i}.pos":
+                (getattr(self.piper.GetArmJointMsgs().joint_state, f"joint_{i + 1}"))
             for i in range(6)  # 从 0 到 5
         }
-        obs_dict["joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
+        obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
@@ -136,11 +136,11 @@ class AlohaAgileXFollower(Robot):
         # Read arm position
         start = time.perf_counter()
         obs_dict = {
-            f"joint{i}.pos":
-                (getattr(self.piper.GetArmJointCtrl().joint_ctrl,f"joint_{i + 1}"))
+            self.id + f".joint{i}.pos":
+                (getattr(self.piper.GetArmJointCtrl().joint_ctrl, f"joint_{i + 1}"))
             for i in range(6)  # 从 0 到 5
         }
-        obs_dict["joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
+        obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperCtrl().gripper_ctrl.grippers_angle
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
@@ -171,7 +171,8 @@ class AlohaAgileXFollower(Robot):
         if not self.is_enabled:
             self.enable()
 
-        goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+        goal_pos = {key.removesuffix(".pos").removeprefix(f"{self.id}."): val for key, val in action.items() if
+                    (key.endswith(".pos") and key.startswith(self.id))}
 
         # Cap goal position when too far away from present position.
         # /!\ Slower fps expected due to reading from the follower.
@@ -187,7 +188,7 @@ class AlohaAgileXFollower(Robot):
         #     goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
         # Send goal position to the arm
-        factor = 1000*180/math.pi
+        factor = 1000 * 180 / math.pi
         joint_0 = int(goal_pos["joint0"].item())
         joint_1 = int(goal_pos["joint1"].item())
         joint_2 = int(goal_pos["joint2"].item())
@@ -195,13 +196,11 @@ class AlohaAgileXFollower(Robot):
         joint_4 = int(goal_pos["joint4"].item())
         joint_5 = int(goal_pos["joint5"].item())
         joint_6 = int(goal_pos["joint6"].item())
-        print(type(joint_6))
-        print(joint_0, joint_1, joint_2,joint_3, joint_4,joint_5,joint_6)
         self.piper.MotionCtrl_2(0x01, 0x01, 100)
         self.piper.JointCtrl(joint_0, joint_1, joint_2,
-                                joint_3, joint_4, joint_5)
+                             joint_3, joint_4, joint_5)
         self.piper.GripperCtrl(abs(joint_6), 1000, 0x01, 0)
-        self.piper.MotionCtrl_2(0x01, 0x01, 100)
+        # self.piper.MotionCtrl_2(0x01, 0x01, 100)
 
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
