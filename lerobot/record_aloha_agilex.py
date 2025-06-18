@@ -96,7 +96,7 @@ class DatasetRecordConfig:
     # Limit the frames per second.
     fps: int = 30
     # Number of seconds for data recording for each episode.
-    episode_time_s: int | float = 60
+    episode_time_s: int | float = 6
     # Number of seconds for resetting the environment after each episode.
     reset_time_s: int | float = 1
     # Number of episodes to record.
@@ -162,7 +162,6 @@ def record_loop(
     events: dict,
     fps: int,
     dataset: LeRobotDataset | None = None,
-    teleop: Teleoperator | None = None,
     policy: PreTrainedPolicy | None = None,
     control_time_s: int | None = None,
     single_task: str | None = None,
@@ -196,11 +195,11 @@ def record_loop(
             )
             action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
         else:
-            action = teleop.get_action()
+            action = robot.get_leader_action()
 
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset.
-        sent_action = robot.send_action(action)
+        sent_action = action
 
         if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
@@ -236,7 +235,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         _init_rerun(session_name="recording")
 
     robot = make_robot_from_config(cfg.robot)
-    teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
     print("here")
     action_features = hw_to_dataset_features(robot.action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
@@ -272,8 +270,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
 
     robot.connect()
-    if teleop is not None:
-        teleop.connect()
 
     listener, events = init_keyboard_listener()
 
@@ -283,7 +279,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             robot=robot,
             events=events,
             fps=cfg.dataset.fps,
-            teleop=teleop,
             policy=policy,
             dataset=dataset,
             control_time_s=cfg.dataset.episode_time_s,
@@ -301,7 +296,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 robot=robot,
                 events=events,
                 fps=cfg.dataset.fps,
-                teleop=teleop,
                 control_time_s=cfg.dataset.reset_time_s,
                 single_task=cfg.dataset.single_task,
                 display_data=cfg.display_data,
@@ -322,7 +316,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     log_say("Stop recording", cfg.play_sounds, blocking=True)
 
     robot.disconnect()
-    teleop.disconnect()
 
     if not is_headless() and listener is not None:
         listener.stop()

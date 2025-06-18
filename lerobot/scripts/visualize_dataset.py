@@ -60,6 +60,11 @@ local$ rerun ws://localhost:9087
 ```
 
 """
+import sys
+
+# 替换为你的项目实际路径
+project_path = "/home/kleist/Documents/Code/lerobot/lerobot"
+sys.path.append(project_path)
 
 import argparse
 import gc
@@ -193,6 +198,7 @@ def visualize_dataset(
 
 
 def main():
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -283,7 +289,7 @@ def main():
     tolerance_s = kwargs.pop("tolerance_s")
 
     logging.info("Loading dataset")
-    dataset = LeRobotDataset(repo_id, root=root, tolerance_s=tolerance_s)
+    dataset = LeRobotDataset(repo_id, root=root, tolerance_s=tolerance_s, video_backend="torchcodec")
 
     visualize_dataset(dataset, **vars(args))
 

@@ -98,6 +98,10 @@ class Robot(abc.ABC):
         """Gets observation from the robot."""
         pass
 
+    def get_leader_action(self) -> dict[str, Any]:
+        """Gets observation from the robot."""
+        return {"null":0}
+
     @abc.abstractmethod
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         """Sends actions to the robot."""

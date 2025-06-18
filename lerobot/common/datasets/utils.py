@@ -80,8 +80,8 @@ def flatten_dict(d: dict, parent_key: str = "", sep: str = "/") -> dict:
 
     For example:
     ```
-    >>> dct = {"a": {"b": 1, "c": {"d": 2}}, "e": 3}`
-    >>> print(flatten_dict(dct))
+    # >>> dct = {"a": {"b": 1, "c": {"d": 2}}, "e": 3}`
+    # >>> print(flatten_dict(dct))
     {"a/b": 1, "a/c/d": 2, "e": 3}
     """
     items = []

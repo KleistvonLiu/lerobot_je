@@ -21,6 +21,7 @@
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -30,7 +31,8 @@ from lerobot.common.errors import DeviceAlreadyConnectedError, DeviceNotConnecte
 
 # NOTE(Steven): more tests + assertions?
 TEST_ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts" / "cameras"
-DEFAULT_PNG_FILE_PATH = TEST_ARTIFACTS_DIR / "image_160x120.png"
+# DEFAULT_PNG_FILE_PATH = TEST_ARTIFACTS_DIR / "image_160x120.png"
+DEFAULT_PNG_FILE_PATH = "/dev/video0"
 TEST_IMAGE_SIZES = ["128x128", "160x120", "320x180", "480x270"]
 TEST_IMAGE_PATHS = [TEST_ARTIFACTS_DIR / f"image_{size}.png" for size in TEST_IMAGE_SIZES]
 
@@ -90,6 +92,19 @@ def test_read(index_or_path):
 
     assert isinstance(img, np.ndarray)
 
+def test_read():
+    config = OpenCVCameraConfig(index_or_path=DEFAULT_PNG_FILE_PATH)
+    camera = OpenCVCamera(config)
+    camera.connect(warmup=False)
+
+    img = camera.read()
+
+    assert isinstance(img, np.ndarray)
+
+    # # 显示图像（OpenCV原生方法）
+    # cv2.imshow('Camera Preview', img)
+    # cv2.waitKey(0)  # 等待任意按键
+    # cv2.destroyAllWindows()
 
 def test_read_before_connect():
     config = OpenCVCameraConfig(index_or_path=DEFAULT_PNG_FILE_PATH)
