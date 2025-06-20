@@ -137,7 +137,7 @@ class RecordConfig:
     # Display all cameras on screen
     display_data: bool = False
     # Use vocal synthesis to read events.
-    play_sounds: bool = True
+    play_sounds: bool = False
     # Resume recording on an existing dataset.
     resume: bool = False
 
@@ -180,13 +180,16 @@ def record_loop(
 
     timestamp = 0
     start_episode_t = time.perf_counter()
+    # count = 0
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
         observation1 = robot1.get_observation()
         observation2 = robot2.get_observation()
         observation = {**observation1, **observation2}
-
+        # if count % 10 == 0:
+        #     print(f"get observation count:{count}")  # 打印消息
+        # count += 1
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
 
@@ -225,6 +228,8 @@ def record_loop(
 
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
+        # if count % 10 == 0:
+        #     print(f"time cost:{dt_s*1e3}")  # 打印消息
 
         timestamp = time.perf_counter() - start_episode_t
         if events["exit_early"]:

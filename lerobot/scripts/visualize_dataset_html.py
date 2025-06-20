@@ -52,6 +52,12 @@ python lerobot/scripts/visualize_dataset_html.py \
 ```
 """
 
+import sys
+
+# 替换为你的项目实际路径
+project_path = "/home/kleist/Documents/Code/lerobot/lerobot"
+sys.path.append(project_path)
+
 import argparse
 import csv
 import json

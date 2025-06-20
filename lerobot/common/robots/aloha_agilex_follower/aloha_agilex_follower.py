@@ -122,10 +122,10 @@ class AlohaAgileXFollower(Robot):
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
-            start = time.perf_counter()
+            # start = time.perf_counter()
             obs_dict[cam_key] = cam.async_read()
-            dt_ms = (time.perf_counter() - start) * 1e3
-            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+            # dt_ms = (time.perf_counter() - start) * 1e3
+            # logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
         return obs_dict
 
@@ -143,14 +143,6 @@ class AlohaAgileXFollower(Robot):
         obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperCtrl().gripper_ctrl.grippers_angle
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
-
-        # Capture images from cameras
-        for cam_key, cam in self.cameras.items():
-            start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
-            dt_ms = (time.perf_counter() - start) * 1e3
-            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
-
         return obs_dict
 
     def send_action(self, action: dict[str, float]) -> dict[str, float]:

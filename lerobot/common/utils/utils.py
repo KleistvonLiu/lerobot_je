@@ -126,6 +126,8 @@ def init_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logging.getLogger().addHandler(console_handler)
+    logging.getLogger().setLevel(logging.INFO) #DEBUG
+    logging.info("Logging initialized.")
 
 
 def format_big_number(num, precision=0):
