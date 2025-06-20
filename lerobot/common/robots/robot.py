@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import draccus
+import numpy as np
 
 from lerobot.common.constants import HF_LEROBOT_CALIBRATION, ROBOTS
 from lerobot.common.motors import MotorCalibration
@@ -104,6 +105,11 @@ class Robot(abc.ABC):
 
     @abc.abstractmethod
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        """Sends actions to the robot."""
+        pass
+
+    @abc.abstractmethod
+    def send_action_np(self, action: np.ndarray):
         """Sends actions to the robot."""
         pass
 

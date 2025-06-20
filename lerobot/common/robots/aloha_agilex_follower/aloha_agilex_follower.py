@@ -21,6 +21,8 @@ from functools import cached_property
 from gc import enable
 from typing import Any
 
+import numpy as np
+
 from lerobot.common.cameras.utils import make_cameras_from_configs
 from lerobot.common.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.common.motors import Motor, MotorCalibration, MotorNormMode
@@ -195,6 +197,32 @@ class AlohaAgileXFollower(Robot):
         # self.piper.MotionCtrl_2(0x01, 0x01, 100)
 
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
+
+    def send_action_np(self, action: np.ndarray):
+        """Command arm to move to a target joint configuration.
+
+        The relative action magnitude may be clipped depending on the configuration parameter
+        `max_relative_target`. In this case, the action sent differs from original action.
+        Thus, this function always returns the action actually sent.
+
+        Args:
+            action (dict[str, float]): The goal positions for the motors.
+
+        Returns:
+            dict[str, float]: The action sent to the motors, potentially clipped.
+        """
+        # start_episode_t = time.perf_counter()
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+        if not self.is_enabled:
+            self.enable()
+        self.piper.MotionCtrl_2(0x01, 0x01, 100)
+        self.piper.JointCtrl(int(action[0]), int(action[1]), int(action[2]),
+                             int(action[3]), int(action[4]), int(action[5]))
+        self.piper.GripperCtrl(abs(int(action[6])), 1000, 0x01, 0)
+        # dt_s = time.perf_counter() - start_episode_t
+        # logging.info(f"here2 {dt_s}")
+        return
 
     @property
     def is_enabled(self) -> bool:
