@@ -57,5 +57,9 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
         from .keyboard.teleop_keyboard import KeyboardEndEffectorTeleop
 
         return KeyboardEndEffectorTeleop(config)
+    elif config.type == "aloha_agilex_leader":
+        from .aloha_agilex_leader import AlohaAgileXLeader
+
+        return AlohaAgileXLeader(config)
     else:
         raise ValueError(config.type)

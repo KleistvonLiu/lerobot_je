@@ -28,7 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY environment.yml /lerobot/environment.yml
 
 # Clone repository and install LeRobot in a single layer
-COPY . /lerobot
-WORKDIR /lerobot
+COPY . /lerobot_je
+WORKDIR /lerobot_je
 RUN /opt/venv/bin/pip install --upgrade --no-cache-dir pip \
-    && /opt/venv/bin/pip install --no-cache-dir ".[test, aloha, xarm, pusht, dynamixel]"
+    && /opt/venv/bin/pip install --no-cache-dir ".[test, pi0, smolvla]" \
+    && /opt/venv/bin/pip install --no-cache-dir piper_sdk \
+    && /opt/venv/bin/pip install --no-cache-dir python-can
