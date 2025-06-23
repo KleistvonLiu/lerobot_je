@@ -16,14 +16,16 @@ RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && 
 
 # Install dependencies and set up Python in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git \
-    libglib2.0-0 libgl1-mesa-glx libegl1-mesa ffmpeg libdbus-1-dev\
+    build-essential cmake git wget\
+    libglib2.0-0 libgl1-mesa-glx libegl1-mesa ffmpeg \
     speech-dispatcher libgeos-dev \
     python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv \
     && ln -s /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && python${PYTHON_VERSION} -m venv /opt/venv \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && echo "source /opt/venv/bin/activate" >> /root/.bashrc
+
+COPY environment.yml /lerobot/environment.yml
 
 # Clone repository and install LeRobot in a single layer
 COPY . /lerobot_je
