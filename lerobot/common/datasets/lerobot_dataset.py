@@ -16,6 +16,7 @@
 import contextlib
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -816,6 +817,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
                 None.
         """
+        start_time = time.perf_counter()
         if not episode_data:
             episode_buffer = self.episode_buffer
 
@@ -881,6 +883,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
+        process_time = (time.perf_counter()- start_time)
+        logging.info(f"save data cost: {process_time}s")
+
 
     def _save_episode_table(self, episode_buffer: dict, episode_index: int) -> None:
         episode_dict = {key: episode_buffer[key] for key in self.hf_features}

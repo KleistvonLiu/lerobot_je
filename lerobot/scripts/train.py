@@ -13,6 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import sys
+
+# 替换为你的项目实际路径
+project_path = "/home/kleist/Documents/Code/lerobot/lerobot"
+sys.path.append(project_path)
+
 import logging
 import time
 from contextlib import nullcontext
@@ -285,4 +291,9 @@ def train(cfg: TrainPipelineConfig):
 
 if __name__ == "__main__":
     init_logging()
+    # 查看 PyTorch 版本
+    print(torch.__version__)
+    print(torch.version.cuda)
+    print(torch.backends.cudnn.version())
+    #
     train()
