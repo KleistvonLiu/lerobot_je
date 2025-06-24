@@ -229,7 +229,6 @@ def record_loop(
 
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
-    print("here1")
     init_logging()
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
@@ -237,7 +236,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
-    print("here")
     action_features = hw_to_dataset_features(robot.action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
     dataset_features = {**action_features, **obs_features}

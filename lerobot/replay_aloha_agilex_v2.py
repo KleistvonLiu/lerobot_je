@@ -128,14 +128,21 @@ def replay(cfg: ReplayConfig):
     robot1.connect()
     robot2.connect()
 
-    log_say("Replaying episode", cfg.play_sounds, blocking=True)
-
     # 逐帧播放
     last_action_array = all_numpy_data[0]
+    step = 5
+    step_time = step/dataset.fps
+
     for idx in range(len(all_numpy_data)-1):
-        new_actions = np.linspace(last_action_array, all_numpy_data[idx+1], 2)  # 插值
+        if idx == 0:
+            logging.info("Start replaying episode.")
+        if idx % step != 0:
+            continue
+        new_actions = np.linspace(last_action_array, all_numpy_data[idx+1], 1)  # 插值
         last_action_array = all_numpy_data[idx+1]
         for act in new_actions:
+            start_episode_t = time.perf_counter()
+
             # 使用线程并行发送动作给 robot1 和 robot2
             def send_action_robot1():
                 robot1.send_action_np(act[0:7])
@@ -154,6 +161,11 @@ def replay(cfg: ReplayConfig):
             # 等待两个线程完成
             thread1.join()
             thread2.join()
+
+            dt_s = time.perf_counter() - start_episode_t
+            # logging.info(f"<UNK>: {dt_s}")
+            time.sleep(max(step_time - dt_s,0))
+            # busy_wait(1 / dataset.fps - dt_s)
 
     robot1.disconnect()
     robot2.disconnect()

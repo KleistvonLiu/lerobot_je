@@ -103,7 +103,7 @@ class DatasetRecordConfig:
     # Number of episodes to record.
     num_episodes: int = 50
     # Encode frames in the dataset into video
-    video: bool = True
+    video: bool = False
     # Upload dataset to Hugging Face hub.
     push_to_hub: bool = False
     # Upload on private repository on the Hugging Face hub.
@@ -239,7 +239,6 @@ def record_loop(
 
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
-    print("here1")
     init_logging()
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
@@ -247,7 +246,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     robot1 = make_robot_from_config(cfg.robot1)
     robot2 = make_robot_from_config(cfg.robot2)
-    print("here")
     merged_action_features = {**robot1.action_features, ** robot2.action_features}
     merged_observation_features = {**robot1.observation_features, ** robot2.observation_features}
     action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
