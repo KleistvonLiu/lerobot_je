@@ -53,6 +53,7 @@ from lerobot.common.utils.utils import (
     log_say,
 )
 
+from piper_sdk import C_PiperInterface
 
 @dataclass
 class DatasetReplayConfig:
@@ -128,43 +129,25 @@ def replay(cfg: ReplayConfig):
     robot1.connect()
     robot2.connect()
 
-    # 逐帧播放
-    step = 1
-    step_time = step/dataset.fps
-
-    for idx in range(len(all_numpy_data)-1):
-        if idx == 0:
-            logging.info("Start replaying episode.")
-        if idx % step != 0:
-            continue
-
-        start_episode_t = time.perf_counter()
-
-        # 使用线程并行发送动作给 robot1 和 robot2
-        def send_action_robot1():
-            robot1.send_action_np(all_numpy_data[idx][0:7])
-
-        def send_action_robot2():
-            robot2.send_action_np(all_numpy_data[idx][7:14])
-
-        # 创建两个线程
-        thread1 = threading.Thread(target=send_action_robot1)
-        thread2 = threading.Thread(target=send_action_robot2)
-
-        # 启动线程
-        thread1.start()
-        thread2.start()
-
-        # 等待两个线程完成
-        thread1.join()
-        thread2.join()
-
-        dt_s = time.perf_counter() - start_episode_t
-        time.sleep(max(step_time - dt_s,0))
+######
+    # piper = C_PiperInterface(can_name="can_left")
+    # piper.ConnectPort()
+    # max_steps = 10000000000
+    # for idx in range(max_steps):
+    #     start_time = time.perf_counter()
+    #     piper.MotionCtrl_2(0x01, 0x01, 100)
+    #     piper.JointCtrl(0, 0, 0, 0, 0, 0)
+    #     piper.GripperCtrl(abs(0), 1000, 0x01, 0)
+    #     end_time = time.perf_counter()
+    #     if idx % 1 == 0:
+    #         print(f"time cost:{(end_time - start_time)*1e3}")
+    #     # piper.MotionCtrl_2(0x01, 0x01, 100)
+    #     time.sleep(0.01)
+######
+    robot1.just_for_test()
 
     robot1.disconnect()
     robot2.disconnect()
-
 
 if __name__ == "__main__":
     replay()
