@@ -117,3 +117,8 @@ class Robot(abc.ABC):
     def disconnect(self) -> None:
         """Disconnects from the robot."""
         pass
+
+    @abc.abstractmethod
+    def just_for_test(self) -> None:
+        """Disconnects from the robot."""
+        pass

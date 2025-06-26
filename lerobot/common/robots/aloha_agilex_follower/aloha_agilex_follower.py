@@ -35,7 +35,6 @@ from ..robot import Robot
 from ..utils import ensure_safe_goal_position
 from .config_aloha_agilex_follower import AlohaAgileXFollowerConfig
 
-from piper_sdk import *
 from piper_sdk import C_PiperInterface
 
 logger = logging.getLogger(__name__)
@@ -49,9 +48,11 @@ class AlohaAgileXFollower(Robot):
         super().__init__(config)
         self.config = config
         self.piper = C_PiperInterface(can_name=self.config.port)
+        # self.piper.ConnectPort()
         self.cameras = make_cameras_from_configs(config.cameras)
         self.is_enabled_ = False
         self.is_robot_connected_ = False
+        self.is_piper_port_connected_ = False
 
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -111,6 +112,10 @@ class AlohaAgileXFollower(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
+        # if not self.is_piper_port_connected_:
+        #     self.piper.ConnectPort()
+        #     self.is_piper_port_connected_ = True
+
         # Read arm position
         start = time.perf_counter()
         obs_dict = {
@@ -120,7 +125,7 @@ class AlohaAgileXFollower(Robot):
         }
         obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
         dt_ms = (time.perf_counter() - start) * 1e3
-        logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+        logger.debug(f"{self} read state: {dt_ms:.3f}ms,{obs_dict.values()}")
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
@@ -216,12 +221,17 @@ class AlohaAgileXFollower(Robot):
             raise DeviceNotConnectedError(f"{self} is not connected.")
         if not self.is_enabled:
             self.enable()
+        # time_point1 = time.perf_counter()
         self.piper.MotionCtrl_2(0x01, 0x01, 100)
+        # time_point2 = time.perf_counter()
         self.piper.JointCtrl(int(action[0]), int(action[1]), int(action[2]),
                              int(action[3]), int(action[4]), int(action[5]))
+        # time_point3 = time.perf_counter()
         self.piper.GripperCtrl(abs(int(action[6])), 1000, 0x01, 0)
-        # dt_s = time.perf_counter() - start_episode_t
-        # logging.info(f"here2 {dt_s}")
+        # time_point4 = time.perf_counter()
+        # logging.info(
+        #     f"time cost {1e3 * (time_point1 - start_episode_t):.3f}/{1e3 * (time_point2 - start_episode_t):.3f}/"
+        #     f"{1e3 * (time_point3 - start_episode_t):.3f}/{1e3 * (time_point4 - start_episode_t):.3f}")
         return
 
     @property
@@ -229,6 +239,7 @@ class AlohaAgileXFollower(Robot):
         return self.is_enabled_
 
     def enable(self) -> None:
+        logger.info(f"try to enable {self.id}")
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
         self.piper.EnableArm(7)
@@ -237,11 +248,29 @@ class AlohaAgileXFollower(Robot):
         return
 
     def disconnect(self):
-        # if not self.is_connected:
-        #     raise DeviceNotConnectedError(f"{self} is not connected.")
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # self.bus.disconnect(self.config.disable_torque_on_disconnect)
+        # if self.is_piper_port_connected_:
+        #     self.piper.DisconnectPort()
+        #     self.is_piper_port_connected_ = False
+
+        self.piper.DisconnectPort()
         for cam in self.cameras.values():
             cam.disconnect()
 
         logger.info(f"{self} disconnected.")
+
+    def just_for_test(self):
+        # self.piper.ConnectPort()
+        max_steps = 10000000000
+        for idx in range(max_steps):
+            start_time = time.perf_counter()
+            self.piper.MotionCtrl_2(0x01, 0x01, 100)
+            self.piper.JointCtrl(10000, 0, 0, 0, 0, 0)
+            self.piper.GripperCtrl(abs(0), 1000, 0x01, 0)
+            end_time = time.perf_counter()
+            if idx % 1 == 0:
+                print(f"time cost:{(end_time - start_time) * 1e3}")
+            # piper.MotionCtrl_2(0x01, 0x01, 100)
+            time.sleep(0.01)
