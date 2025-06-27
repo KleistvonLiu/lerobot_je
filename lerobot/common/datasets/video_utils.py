@@ -20,6 +20,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
+import subprocess
 
 import av
 import pyarrow as pa
@@ -329,6 +330,56 @@ def encode_video_frames(
     if not video_path.exists():
         raise OSError(f"Video encoding did not work. File not found: {video_path}.")
 
+def encode_video_frames_fast(
+    imgs_dir: Path | str,
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1", #"av1_nvenc"
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    log_level: int | None = None,  # ignored in CLI version
+    overwrite: bool = False,
+) -> None:
+    imgs_dir = Path(imgs_dir)
+    video_path = Path(video_path)
+    input_pattern = str(imgs_dir / "frame_%06d.png")
+
+    if (vcodec in ["libsvtav1", "hevc"]) and pix_fmt == "yuv444p":
+        import logging
+        logging.warning(f"Incompatible pixel format 'yuv444p' for codec {vcodec}, switching to 'yuv420p'")
+        pix_fmt = "yuv420p"
+
+    if overwrite:
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        overwrite_flag = "-y"
+    else:
+        overwrite_flag = "-n"
+
+    cmd = [
+        "ffmpeg",
+        overwrite_flag,
+        "-framerate", str(fps),
+        "-i", input_pattern,
+        "-c:v", vcodec,
+        "-pix_fmt", pix_fmt,
+    ]
+
+    if crf is not None:
+        cmd += ["-crf", str(crf)]
+
+    if g is not None:
+        cmd += ["-g", str(g)]
+
+    if fast_decode:
+        if vcodec == "libsvtav1":
+            cmd += ["-svtav1-params", f"fast-decode={fast_decode}"]
+        elif vcodec == "hevc":
+            cmd += ["-tune", "fastdecode"]
+
+    cmd.append(str(video_path))
+    subprocess.run(cmd, check=True)
 
 @dataclass
 class VideoFrame:

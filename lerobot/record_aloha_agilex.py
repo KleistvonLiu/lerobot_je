@@ -103,7 +103,7 @@ class DatasetRecordConfig:
     # Number of episodes to record.
     num_episodes: int = 50
     # Encode frames in the dataset into video
-    video: bool = False
+    video: bool = True
     # Upload dataset to Hugging Face hub.
     push_to_hub: bool = False
     # Upload on private repository on the Hugging Face hub.

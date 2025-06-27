@@ -15,10 +15,12 @@
 # limitations under the License.
 import contextlib
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import Callable
+from concurrent.futures import ProcessPoolExecutor
 
 import datasets
 import numpy as np
@@ -70,6 +72,7 @@ from lerobot.common.datasets.video_utils import (
     VideoFrame,
     decode_video_frames,
     encode_video_frames,
+    encode_video_frames_fast,
     get_safe_default_codec,
     get_video_info,
 )
@@ -847,19 +850,19 @@ class LeRobotDataset(torch.utils.data.Dataset):
             if key in ["index", "episode_index", "task_index"] or ft["dtype"] in ["image", "video"]:
                 continue
             episode_buffer[key] = np.stack(episode_buffer[key])
-
         self._wait_image_writer()
         self._save_episode_table(episode_buffer, episode_index)
+        # exit(1)
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
         if len(self.meta.video_keys) > 0:
             video_paths = self.encode_episode_videos(episode_index)
+            # video_paths = self.encode_episode_videos_parallel(episode_index)
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
         # `meta.save_episode` be executed after encoding the videos
         self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats)
-
         ep_data_index = get_episode_data_index(self.meta.episodes, [episode_index])
         ep_data_index_np = {k: t.numpy() for k, t in ep_data_index.items()}
         check_timestamps_sync(
@@ -962,6 +965,26 @@ class LeRobotDataset(torch.utils.data.Dataset):
             ).parent
             encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
 
+        return video_paths
+
+    def encode_episode_videos_parallel(self, episode_index: int) -> dict:
+        video_paths = {}
+        tasks = []
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            for key in self.meta.video_keys:
+                video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+                video_paths[key] = str(video_path)
+                if video_path.is_file():
+                    continue
+                img_dir = self._get_image_file_path(
+                    episode_index=episode_index, image_key=key, frame_index=0
+                ).parent
+                # tasks.append(executor.submit(encode_video_frames, img_dir, video_path, self.fps, overwrite=True))
+                tasks.append(executor.submit(encode_video_frames_fast, img_dir, video_path, self.fps, overwrite=True))
+
+            # 等待任务完成（可选）
+            for task in tasks:
+                task.result()
         return video_paths
 
     @classmethod
