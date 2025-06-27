@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable
 from concurrent.futures import ProcessPoolExecutor
 
+import av.logging
 import datasets
 import numpy as np
 import packaging.version
@@ -254,6 +255,7 @@ class LeRobotDatasetMetadata:
         episode_length: int,
         episode_tasks: list[str],
         episode_stats: dict[str, dict],
+        update_video_info: bool = True,
     ) -> None:
         self.info["total_episodes"] += 1
         self.info["total_frames"] += episode_length
@@ -264,7 +266,7 @@ class LeRobotDatasetMetadata:
 
         self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
         self.info["total_videos"] += len(self.video_keys)
-        if len(self.video_keys) > 0:
+        if len(self.video_keys) > 0 and update_video_info:
             self.update_video_info()
 
         write_info(self.info, self.root)
@@ -811,7 +813,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         self.episode_buffer["size"] += 1
 
-    def save_episode(self, episode_data: dict | None = None) -> None:
+    def save_episode(self, episode_data: dict | None = None, encode_videos: bool = True) -> None:
         """
         This will save to disk the current episode in self.episode_buffer.
 
@@ -819,7 +821,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
             episode_data (dict | None, optional): Dict containing the episode data to save. If None, this will
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
                 None.
+            encode_videos (bool, optional): Whether to encode videos immediately. If False, videos will be
+                encoded later in batch. Defaults to True for backward compatibility.
         """
+
         start_time = time.perf_counter()
         if not episode_data:
             episode_buffer = self.episode_buffer
@@ -855,14 +860,15 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # exit(1)
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
-        if len(self.meta.video_keys) > 0:
+        # Only encode videos if requested
+        if encode_videos and len(self.meta.video_keys) > 0:
             video_paths = self.encode_episode_videos(episode_index)
             # video_paths = self.encode_episode_videos_parallel(episode_index)
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
         # `meta.save_episode` be executed after encoding the videos
-        self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats)
+        self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats, update_video_info=encode_videos)
         ep_data_index = get_episode_data_index(self.meta.episodes, [episode_index])
         ep_data_index_np = {k: t.numpy() for k, t in ep_data_index.items()}
         check_timestamps_sync(
@@ -873,16 +879,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.tolerance_s,
         )
 
-        video_files = list(self.root.rglob("*.mp4"))
-        assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
+        # Only do post-encoding cleanup if we actually encoded videos
+        if encode_videos:
+            video_files = list(self.root.rglob("*.mp4"))
+            assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
 
-        parquet_files = list(self.root.rglob("*.parquet"))
-        assert len(parquet_files) == self.num_episodes
+            parquet_files = list(self.root.rglob("*.parquet"))
+            assert len(parquet_files) == self.num_episodes
 
-        # delete images
-        img_dir = self.root / "images"
-        if img_dir.is_dir():
-            shutil.rmtree(self.root / "images")
+            # delete images
+            img_dir = self.root / "images"
+            if img_dir.is_dir():
+                shutil.rmtree(self.root / "images")
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
@@ -967,6 +975,35 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         return video_paths
 
+    def batch_encode_videos(self, start_episode: int = 0, end_episode: int | None = None) -> None:
+        """
+        Batch encode videos for multiple episodes.
+
+        Args:
+            start_episode: Starting episode index (inclusive)
+            end_episode: Ending episode index (exclusive). If None, encodes all episodes from start_episode
+        """
+        start_time = time.perf_counter()
+        if end_episode is None:
+            end_episode = self.meta.total_episodes
+
+        logging.info(f"Starting batch video encoding for episodes {start_episode} to {end_episode - 1}")
+
+        for ep_idx in range(start_episode, end_episode):
+            logging.info(f"Encoding videos for episode {ep_idx}")
+            # self.encode_episode_videos(ep_idx)
+            self.encode_episode_videos_parallel(ep_idx)
+
+        # Update video info in metadata
+        self.meta.update_video_info()
+
+        # Clean up image directories after successful encoding
+        img_dir = self.root / "images"
+        if img_dir.is_dir():
+            shutil.rmtree(img_dir)
+
+        logging.info(f"Batch video encoding completed, cost:{time.perf_counter() - start_time:.3f} seconds")
+
     def encode_episode_videos_parallel(self, episode_index: int) -> dict:
         video_paths = {}
         tasks = []
@@ -979,8 +1016,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 img_dir = self._get_image_file_path(
                     episode_index=episode_index, image_key=key, frame_index=0
                 ).parent
-                # tasks.append(executor.submit(encode_video_frames, img_dir, video_path, self.fps, overwrite=True))
-                tasks.append(executor.submit(encode_video_frames_fast, img_dir, video_path, self.fps, overwrite=True))
+                tasks.append(executor.submit(encode_video_frames, img_dir, video_path, self.fps, overwrite=True, log_level = av.logging.DEBUG))
+                # tasks.append(executor.submit(encode_video_frames_fast, img_dir, video_path, self.fps, overwrite=True))
 
             # 等待任务完成（可选）
             for task in tasks:
