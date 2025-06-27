@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 import subprocess
 
+import os
+os.environ["SVT_LOG"] = "1"   # 小心：必须在 import av 之前
 import av
 import pyarrow as pa
 import torch
