@@ -84,7 +84,7 @@ class AlohaAgileXFollower(Robot):
         """
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
-        self.piper.ConnectPort()
+        # self.piper.ConnectPort()
         self.is_robot_connected_ = True
         for cam in self.cameras.values():
             cam.connect()
@@ -112,9 +112,9 @@ class AlohaAgileXFollower(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # if not self.is_piper_port_connected_:
-        #     self.piper.ConnectPort()
-        #     self.is_piper_port_connected_ = True
+        if not self.is_piper_port_connected_:
+            self.piper.ConnectPort()
+            self.is_piper_port_connected_ = True
 
         # Read arm position
         start = time.perf_counter()
@@ -251,15 +251,20 @@ class AlohaAgileXFollower(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # if self.is_piper_port_connected_:
-        #     self.piper.DisconnectPort()
-        #     self.is_piper_port_connected_ = False
+        if self.is_piper_port_connected_:
+            self.piper.DisconnectPort()
+            self.is_piper_port_connected_ = False
 
-        self.piper.DisconnectPort()
+        # self.piper.DisconnectPort()
         for cam in self.cameras.values():
             cam.disconnect()
 
         logger.info(f"{self} disconnected.")
+
+    def disconnect_port(self):
+        if self.is_piper_port_connected_:
+            self.piper.DisconnectPort()
+            self.is_piper_port_connected_ = False
 
     def just_for_test(self):
         # self.piper.ConnectPort()

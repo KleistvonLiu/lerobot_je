@@ -103,7 +103,7 @@ class DatasetRecordConfig:
     # Number of episodes to record.
     num_episodes: int = 50
     # Encode frames in the dataset into video
-    video: bool = True
+    video: bool = False
     # Upload dataset to Hugging Face hub.
     push_to_hub: bool = False
     # Upload on private repository on the Hugging Face hub.
@@ -335,6 +335,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             events["exit_early"] = False
             dataset.clear_episode_buffer()
             continue
+
+        robot1.disconnect_port()
+        robot2.disconnect_port()
 
         # dataset.save_episode()
         # Save episode with or without video encoding based on batch size

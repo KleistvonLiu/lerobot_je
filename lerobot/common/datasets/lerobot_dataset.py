@@ -880,7 +880,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         )
 
         # Only do post-encoding cleanup if we actually encoded videos
-        if encode_videos:
+        if encode_videos and len(self.meta.video_keys) > 0:
             video_files = list(self.root.rglob("*.mp4"))
             assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
 
