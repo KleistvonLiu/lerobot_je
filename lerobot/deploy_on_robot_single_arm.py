@@ -37,8 +37,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pformat
-from typing import Any
-
+import pandas as pd
 
 from lerobot.common.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
@@ -125,7 +124,6 @@ class DatasetRecordConfig:
 @dataclass
 class DeployConfig:
     robot1: RobotConfig
-    robot2: RobotConfig
     dataset: DatasetRecordConfig
     policy: PreTrainedConfig
 
@@ -148,9 +146,8 @@ def deploy(cfg: DeployConfig):
     logging.info(pformat(asdict(cfg)))
 
     robot1 = make_robot_from_config(cfg.robot1)
-    robot2 = make_robot_from_config(cfg.robot2)
-    merged_action_features = {**robot1.action_features, ** robot2.action_features}
-    merged_observation_features = {**robot1.observation_features, ** robot2.observation_features}
+    merged_action_features = {**robot1.action_features}
+    merged_observation_features = {**robot1.observation_features}
     action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(merged_observation_features, "observation", cfg.dataset.video)
 
@@ -165,31 +162,37 @@ def deploy(cfg: DeployConfig):
     policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
 
     robot1.connect()
-    robot2.connect()
 
     print("Running inference")
     i = 0
-    NB_CYCLES_CLIENT_CONNECTION = 100000000
+    NB_CYCLES_CLIENT_CONNECTION = 6000
 
+    rows = []
     while i < NB_CYCLES_CLIENT_CONNECTION:
-        # start_time = time.perf_counter()
-        observation1 = robot1.get_observation()
-        observation2 = robot2.get_observation()
-        observation = {**observation1, **observation2}
-        # end_time1 = time.perf_counter()
-        observation_frame = build_dataset_frame(obs_features, observation, prefix="observation")
+        observation = robot1.get_observation()
+        observation_frame = build_dataset_frame(obs_features, observation,
+                                                prefix="observation")
         action_values = predict_action(
-            observation_frame, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp
+            observation_frame,
+            policy,
+            get_safe_torch_device(policy.config.device),
+            policy.config.use_amp,
         )
-        # end_time2 = time.perf_counter()
-        robot1.send_action_np(action_values[0:7])
-        robot2.send_action_np(action_values[7:14])
-        # end_time3 = time.perf_counter()
+
+        row = {k: observation[k] for k in observation.keys() if k.endswith(".pos")}
+
+        for j in range(7):
+            row[f"action_{j}"] = float(action_values[j])  # 转成 Python float
+
+        rows.append(row)
+        robot1.send_action_np(action_values[:7])
         i += 1
-        # logging.info(f"Inference time cost: {end_time1 - start_time:.3f}/{end_time2-start_time:.3f}/{end_time3-start_time:.3f}")
+        # time.sleep(0.03)
+
+    # 循环结束后一次写盘
+    pd.DataFrame(rows).to_csv("robot_log_3.csv", index=False)
 
     robot1.disconnect()
-    robot2.disconnect()
 
 if __name__ == "__main__":
     print("start deploying")

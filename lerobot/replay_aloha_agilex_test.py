@@ -26,6 +26,11 @@ python -m lerobot.replay \
     --dataset.episode=2
 ```
 """
+import os
+import sys
+# 替换为你的项目实际路径
+project_path = "/home/kleist/Documents/Code/lerobot/lerobot"
+sys.path.append(project_path)
 
 import logging
 import time
@@ -127,7 +132,7 @@ def replay(cfg: ReplayConfig):
     all_numpy_data = [tensor.numpy() for tensor in actions[replay_type]]
 
     robot1.connect()
-    robot2.connect()
+    # robot2.connect()
 
 ######
     # piper = C_PiperInterface(can_name="can_left")
@@ -144,10 +149,14 @@ def replay(cfg: ReplayConfig):
     #     # piper.MotionCtrl_2(0x01, 0x01, 100)
     #     time.sleep(0.01)
 ######
-    robot1.just_for_test()
+    # robot1.just_for_test()
 
+    max_steps = 10000000000
+    i = 0
+    while i < max_steps:
+        time.sleep(0.001)
     robot1.disconnect()
-    robot2.disconnect()
+    # robot2.disconnect()
 
 if __name__ == "__main__":
     replay()

@@ -93,7 +93,7 @@ class ACTConfig(PreTrainedConfig):
     # Input / output structure.
     n_obs_steps: int = 1
     chunk_size: int = 25
-    n_action_steps: int = 25
+    n_action_steps: int = 1
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -126,7 +126,7 @@ class ACTConfig(PreTrainedConfig):
 
     # Inference.
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
-    temporal_ensemble_coeff: float | None = None
+    temporal_ensemble_coeff: float | None = 0.01
 
     # Training and loss computation.
     dropout: float = 0.1

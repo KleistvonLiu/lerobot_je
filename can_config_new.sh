@@ -92,7 +92,7 @@
 #-------------------------------------------------------------------------------------------------#
 
 # 预定义的 CAN 模块数量
-EXPECTED_CAN_COUNT=3
+EXPECTED_CAN_COUNT=2
 
 if [ "$EXPECTED_CAN_COUNT" -eq 1 ]; then
     # 默认的 CAN 名称，用户可以通过命令行参数设定
@@ -110,7 +110,7 @@ if [ "$EXPECTED_CAN_COUNT" -ne 1 ]; then
     declare -A USB_PORTS 
     USB_PORTS["1-8:1.0"]="can_left:1000000"
     USB_PORTS["1-7:1.0"]="can_right:1000000"
-    USB_PORTS["1-13:1.0"]="can0:500000"
+#    USB_PORTS["1-13:1.0"]="can0:500000"
 fi
 
 # 获取当前系统中的 CAN 模块数量

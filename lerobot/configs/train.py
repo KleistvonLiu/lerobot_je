@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import datetime as dt
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,7 +53,7 @@ class TrainPipelineConfig(HubMixin):
     # Number of workers for the dataloader.
     num_workers: int = 4
     batch_size: int = 64
-    steps: int = 100_00
+    steps: int = 100_000
     eval_freq: int = 20_000
     log_freq: int = 200
     save_checkpoint: bool = True
@@ -87,7 +88,7 @@ class TrainPipelineConfig(HubMixin):
                     f"{config_path=} is expected to be a local path. "
                     "Resuming from the hub is not supported for now."
                 )
-            policy_path = Path(config_path).parent
+            policy_path = Path(config_path)
             self.policy.pretrained_path = policy_path
             self.checkpoint_path = policy_path.parent
 
