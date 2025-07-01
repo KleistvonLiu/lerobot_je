@@ -167,7 +167,7 @@ def deploy(cfg: DeployConfig):
     i = 0
     NB_CYCLES_CLIENT_CONNECTION = 6000
 
-    rows = []
+    # rows = []
     while i < NB_CYCLES_CLIENT_CONNECTION:
         observation = robot1.get_observation()
         observation_frame = build_dataset_frame(obs_features, observation,
@@ -179,18 +179,18 @@ def deploy(cfg: DeployConfig):
             policy.config.use_amp,
         )
 
-        row = {k: observation[k] for k in observation.keys() if k.endswith(".pos")}
+        # row = {k: observation[k] for k in observation.keys() if k.endswith(".pos")}
 
-        for j in range(7):
-            row[f"action_{j}"] = float(action_values[j])  # 转成 Python float
+        # for j in range(7):
+        #     row[f"action_{j}"] = float(action_values[j])  # 转成 Python float
 
-        rows.append(row)
+        # rows.append(row)
         robot1.send_action_np(action_values[:7])
         i += 1
         # time.sleep(0.03)
 
     # 循环结束后一次写盘
-    pd.DataFrame(rows).to_csv("robot_log_3.csv", index=False)
+    # pd.DataFrame(rows).to_csv("robot_log_3.csv", index=False)
 
     robot1.disconnect()
 

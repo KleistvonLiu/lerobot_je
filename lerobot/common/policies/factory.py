@@ -17,6 +17,7 @@
 import logging
 
 from torch import nn
+from termcolor import colored
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.common.datasets.utils import dataset_to_policy_features
@@ -142,9 +143,16 @@ def make_policy(
                 "by default without stats from a dataset."
             )
         features = env_to_policy_features(env_cfg)
-
     cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
+    ## original
     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}
+    ## modify for aloha agilex, using follower arm's state as input
+    # cfg.input_features = {key: ft for key, ft in features.items() if not key.startswith("observation.state")}
+    # logging.info(colored("Using follower arm's state as input!!!!!!!!!!", "red", attrs=["bold"]))
+    ##
+    logging.info(cfg.output_features)
+    logging.info(cfg.input_features)
+    # exit(1)
     kwargs["config"] = cfg
 
     if cfg.pretrained_path:

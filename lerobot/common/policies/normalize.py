@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import logging
 
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
@@ -153,6 +154,8 @@ class Normalize(nn.Module):
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         batch = dict(batch)  # shallow copy avoids mutating the input batch
         for key, ft in self.features.items():
+            # logging.info(f"Normalizing {key}")
+            # logging.info(batch[key].shape)
             if key not in batch:
                 # FIXME(aliberts, rcadene): This might lead to silent fail!
                 continue
@@ -227,6 +230,8 @@ class Unnormalize(nn.Module):
     def forward(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         batch = dict(batch)  # shallow copy avoids mutating the input batch
         for key, ft in self.features.items():
+            # logging.info(f"Unormalizing {key}")
+            # logging.info(batch[key].shape)
             if key not in batch:
                 continue
 
