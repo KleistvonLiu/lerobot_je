@@ -37,7 +37,9 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pformat
-import pandas as pd
+import multiprocessing as mp
+from typing import Tuple
+import torch, time, logging
 
 from lerobot.common.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
@@ -140,10 +142,34 @@ class DeployConfig:
         """This enables the parser to load config from the policy using `--policy.path=local/dir`"""
         return ["policy"]
 
+# ---------- 子进程：推理循环 ----------
+def inference_worker(
+    in_q: mp.Queue,
+    out_q: mp.Queue,
+    cfg_policy,
+    ds_meta
+):
+    """
+    独立进程：收到 observation_frame → 预测 → 输出 action_values
+    """
+    # 1. 只在该进程里加载一次模型 / CUDA
+    policy = make_policy(cfg_policy, ds_meta=ds_meta) if cfg_policy else None
+    device = get_safe_torch_device(policy.config.device)
+    use_amp = policy.config.use_amp
+
+    while True:
+        item = in_q.get()
+        if item is None:            # 收到结束标识
+            break
+        idx, obs_frame = item       # idx 用来对应主进程里的顺序
+        action_vals = predict_action(obs_frame, policy, device, use_amp)
+        out_q.put((idx, action_vals))
+
 @parser.wrap()
 def deploy(cfg: DeployConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
+
 
     robot1 = make_robot_from_config(cfg.robot1)
     merged_action_features = {**robot1.action_features}
@@ -159,41 +185,68 @@ def deploy(cfg: DeployConfig):
     print(cfg.policy.type)
     print(cfg.policy.pretrained_path)
     # Load pretrained policy
-    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    # policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+
+    # ==== 1. 启动推理子进程 ====
+    ctx = mp.get_context("spawn")        # "spawn" 更安全，尤其 CUDA
+    in_q: mp.Queue = ctx.Queue(maxsize=4)   # 根据实时性调节 maxsize
+    out_q: mp.Queue = ctx.Queue(maxsize=4)
+
+    proc = ctx.Process(
+        target=inference_worker,
+        args=(in_q, out_q, cfg.policy, dataset.meta)
+    )
+    proc.daemon = True
+    proc.start()
 
     robot1.connect()
-
-    print("Running inference")
-    i = 0
-    NB_CYCLES_CLIENT_CONNECTION = 6000
+    i, sent_idx, recv_idx = 0, 0, 0
+    kMaxTimeStamps = 6000
 
     # rows = []
-    while i < NB_CYCLES_CLIENT_CONNECTION:
+    step = 1
+    step_time = step/(dataset.fps-2)
+
+    while i < kMaxTimeStamps:
+        t0 = time.perf_counter()
+
+        # 2.1 采集
         observation = robot1.get_observation()
-        observation_frame = build_dataset_frame(obs_features, observation,
-                                                prefix="observation")
-        action_values = predict_action(
-            observation_frame,
-            policy,
-            get_safe_torch_device(policy.config.device),
-            policy.config.use_amp,
+        obs_frame = build_dataset_frame(
+            obs_features, observation, prefix="observation"
         )
 
-        # row = {k: observation[k] for k in observation.keys() if k.endswith(".pos")}
+        # 2.2 将帧放入队列（若满可选择丢帧 or 阻塞）
+        try:
+            in_q.put_nowait((sent_idx, obs_frame))
+            sent_idx += 1
+        except mp.queues.Full:
+            logging.warning("inference queue full, dropping frame")
+            # 丢帧或阻塞: in_q.put((sent_idx, obs_frame))
 
-        # for j in range(7):
-        #     row[f"action_{j}"] = float(action_values[j])  # 转成 Python float
+        # 不用 try/except；直接检查队列是否为空
+        action_vals = None
+        while not out_q.empty():
+            idx, action_vals = out_q.get_nowait()
+            recv_idx = idx
+            logging.debug(f"got result #{recv_idx}")
 
-        # rows.append(row)
-        robot1.send_action_np(action_values[:7])
+        # 2.4 如果有最新动作，就发给机器人
+        if action_vals is not None:
+            # logging.info(recv_idx)
+            robot1.send_action_np(action_vals[:7])
+
+        # 2.5 统计
         i += 1
-        # time.sleep(0.03)
+        dt_s = time.perf_counter() - t0
+        time.sleep(max(step_time - dt_s,0))
+        # logging.info(f"loop {i} dt={t1-t0:.3f} s")
 
-    # 循环结束后一次写盘
-    # pd.DataFrame(rows).to_csv("robot_log_3.csv", index=False)
-
+    # ==== 3. 结束 ====
+    in_q.put(None)      # 通知子进程退出
+    proc.join()
     robot1.disconnect()
 
 if __name__ == "__main__":
-    print("start deploying")
+    logging.info("Running inference (main process loop)")
     deploy()
