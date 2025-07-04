@@ -4,7 +4,7 @@ import torch
 from huggingface_hub import HfApi
 
 import lerobot
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 
 # Let's take this one for this example
 repo_id = "lerobot/test"

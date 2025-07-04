@@ -92,7 +92,7 @@
 #-------------------------------------------------------------------------------------------------#
 
 # 预定义的 CAN 模块数量
-EXPECTED_CAN_COUNT=2
+EXPECTED_CAN_COUNT=1
 
 if [ "$EXPECTED_CAN_COUNT" -eq 1 ]; then
     # 默认的 CAN 名称，用户可以通过命令行参数设定
@@ -106,9 +106,9 @@ if [ "$EXPECTED_CAN_COUNT" -eq 1 ]; then
 fi
 
 # 预定义的 USB 端口、目标接口名称及其比特率（在多个 CAN 模块时使用）
-if [ "$EXPECTED_CAN_COUNT" -ne 1 ]; then
+if [ "$EXPECTED_CAN_COUNT" -ne 0 ]; then
     declare -A USB_PORTS 
-    USB_PORTS["1-8:1.0"]="can_left:1000000"
+#    USB_PORTS["1-8:1.0"]="can_left:1000000"
     USB_PORTS["1-7:1.0"]="can_right:1000000"
 #    USB_PORTS["1-13:1.0"]="can0:500000"
 fi
@@ -130,7 +130,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # 判断是否只需要处理一个 CAN 模块
-if [ "$EXPECTED_CAN_COUNT" -eq 1 ]; then
+if [ "$EXPECTED_CAN_COUNT" -eq 0 ]; then
     if [ -n "$USB_ADDRESS" ]; then
         echo "检测到 USB 硬件地址参数: $USB_ADDRESS"
         

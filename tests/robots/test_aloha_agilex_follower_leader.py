@@ -7,12 +7,12 @@ import numpy as np
 project_path = "/home/kleist/Documents/Code/lerobot/lerobot"
 sys.path.append(project_path)
 
-from lerobot.common.utils.utils import init_logging
-from lerobot.common.robots.aloha_agilex_follower import (
+from lerobot.utils.utils import init_logging
+from lerobot.robots.aloha_agilex_follower import (
     AlohaAgileXFollower,
     AlohaAgileXFollowerConfig,
 )
-from lerobot.common.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
+from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 
 DEFAULT_PNG_FILE_PATH = "/dev/video0"
 
