@@ -50,6 +50,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.policies.factory import make_policy
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
@@ -147,7 +148,8 @@ def inference_worker(
     in_q: mp.Queue,
     out_q: mp.Queue,
     cfg_policy,
-    ds_meta
+    ds_meta,
+    task
 ):
     """
     独立进程：收到 observation_frame → 预测 → 输出 action_values
@@ -162,7 +164,7 @@ def inference_worker(
         if item is None:            # 收到结束标识
             break
         idx, obs_frame = item       # idx 用来对应主进程里的顺序
-        action_vals = predict_action(obs_frame, policy, device, use_amp)
+        action_vals = predict_action(obs_frame, policy, device, use_amp, task=task)
         out_q.put((idx, action_vals))
 
 @parser.wrap()
@@ -182,8 +184,7 @@ def deploy(cfg: DeployConfig):
         root=cfg.dataset.root,
     )
 
-    print(cfg.policy.type)
-    print(cfg.policy.pretrained_path)
+    logging.info(f"policy type: {cfg.policy.type}; policy path: {cfg.policy.pretrained_path}")
     # Load pretrained policy
     # policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
 
@@ -192,9 +193,10 @@ def deploy(cfg: DeployConfig):
     in_q: mp.Queue = ctx.Queue(maxsize=4)   # 根据实时性调节 maxsize
     out_q: mp.Queue = ctx.Queue(maxsize=4)
 
+    task = "pick up the brown pump and put it into the blue box"
     proc = ctx.Process(
         target=inference_worker,
-        args=(in_q, out_q, cfg.policy, dataset.meta)
+        args=(in_q, out_q, cfg.policy, dataset.meta, task)
     )
     proc.daemon = True
     proc.start()
@@ -221,7 +223,7 @@ def deploy(cfg: DeployConfig):
             in_q.put_nowait((sent_idx, obs_frame))
             sent_idx += 1
         except mp.queues.Full:
-            logging.warning("inference queue full, dropping frame")
+            logging.debug("inference queue full, dropping frame")
             # 丢帧或阻塞: in_q.put((sent_idx, obs_frame))
 
         # 不用 try/except；直接检查队列是否为空
