@@ -51,7 +51,7 @@ policy = SmolVLAPolicy.from_pretrained("lerobot/smolvla_base")
 ```
 
 """
-
+import logging
 import math
 import os
 import re
@@ -415,7 +415,6 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         self.eval()
-
         batch = self._prepare_batch(batch)
         self._queues = populate_queues(self._queues, batch, exclude_keys=[ACTION])
 
