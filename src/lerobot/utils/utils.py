@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+import csv
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,7 @@ from copy import copy, deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
+from typing import Union, Sequence
 
 import numpy as np
 import torch
@@ -374,3 +375,44 @@ class TimerManager:
         """
         val = self.percentile(p)
         return 0.0 if val == 0 else 1.0 / val
+
+def write_action_csv(
+    action: Union[torch.Tensor, np.ndarray, Sequence],
+    file_path: str | Path = "actions.csv",
+) -> None:
+    """
+    将动作张量写入 CSV（追加模式）。
+
+    Parameters
+    ----------
+    action : Tensor | ndarray | Sequence
+        形状 (B, T, D) 或 (T, D) 的动作张量 / 数组 / 可迭代对象。
+        - 若是 torch.Tensor，会自动 .detach().cpu().
+    file_path : str | Path, default "actions.csv"
+        目标 CSV 路径，文件不存在时会创建并写表头。
+    """
+    # -------- 1. 统一成 numpy，形状 (B, T, D) --------
+    if isinstance(action, torch.Tensor):
+        data = action.detach().cpu().numpy()
+    else:  # ndarray 或 list
+        data = np.asarray(action)
+
+    if data.ndim == 2:         # (T, D) → (1, T, D)
+        data = data[None, ...]
+
+    assert data.ndim == 3, "action must be (B, T, D) or (T, D)"
+
+    B, T, D = data.shape
+    flat = data.reshape(B * T, D)   # (B*T, D)
+
+    # -------- 2. 写入 CSV --------
+    file_path = Path(file_path)
+    write_header = not file_path.exists()
+
+    with file_path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            header = [f"action_{i}" for i in range(D)]
+            writer.writerow(header)
+
+        writer.writerows(flat.tolist())

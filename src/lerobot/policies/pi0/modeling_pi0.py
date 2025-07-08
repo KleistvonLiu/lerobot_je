@@ -54,6 +54,7 @@ from collections import deque
 
 import torch
 import torch.nn.functional as F  # noqa: N812
+from sympy.physics.units import length
 from torch import Tensor, nn
 from transformers import AutoTokenizer
 
@@ -66,6 +67,7 @@ from lerobot.policies.pi0.paligemma_with_expert import (
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.utils import get_safe_dtype
+from lerobot.utils.utils import write_action_csv
 
 
 def create_sinusoidal_pos_embedding(
@@ -247,8 +249,8 @@ class PI0Policy(PreTrainedPolicy):
         self.unnormalize_outputs = Unnormalize(
             config.output_features, config.normalization_mapping, dataset_stats
         )
-
-        self.language_tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
+        print("dataset stats:\n", dataset_stats)
+        self.language_tokenizer = AutoTokenizer.from_pretrained("/home/kleist/Documents/Model/paligemma/paligemma-3b-pt-224")
         self.model = PI0FlowMatching(config)
 
         self.reset()
@@ -294,8 +296,12 @@ class PI0Policy(PreTrainedPolicy):
             # Unpad actions
             original_action_dim = self.config.action_feature.shape[0]
             actions = actions[:, :, :original_action_dim]
-
+            # print(f"normalized action: {actions}")
+            # print(f"normalized action:")
+            # write_action_csv(actions)
             actions = self.unnormalize_outputs({"action": actions})["action"]
+            # write_action_csv(actions)
+            # print(f"unnormalized action: {actions}")
 
             if self.config.adapt_to_pi_aloha:
                 actions = self._pi_aloha_encode_actions(actions)
@@ -387,10 +393,8 @@ class PI0Policy(PreTrainedPolicy):
         """Tokenize the text input"""
         device = batch[OBS_STATE].device
         tasks = batch["task"]
-
         # PaliGemma prompt has to end with a new line
         tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
-
         tokenized_prompt = self.language_tokenizer.__call__(
             tasks,
             padding="max_length",
@@ -552,7 +556,8 @@ class PI0FlowMatching(nn.Module):
         # full attention between image and language inputs
         num_lang_embs = lang_emb.shape[1]
         att_masks += [0] * num_lang_embs
-
+        # for i, t in enumerate(embs):
+        #     print(f"tensor {i}: shape = {t.shape}")
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
         att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)

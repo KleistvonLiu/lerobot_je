@@ -116,6 +116,13 @@ class LeRobotDatasetMetadata:
         else:
             self.episodes_stats = load_episodes_stats(self.root)
             self.stats = aggregate_stats(list(self.episodes_stats.values()))
+            # print("here: ")
+            # print("-------------------------------------")
+            # print(self.root)
+            # print("-------------------------------------")
+            # print(self.episodes_stats)
+            # print("-------------------------------------")
+            # print(self.stats)
 
     def pull_from_repo(
         self,
@@ -479,7 +486,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         try:
             if force_cache_sync:
                 raise FileNotFoundError
+            print("------------------------------------")
+            # print(self.root)
+            # print(self.get_episodes_file_paths())
+            for fpath in self.get_episodes_file_paths():
+                if not (self.root / fpath).is_file():
+                    print(f"false path: {fpath}")
             assert all((self.root / fpath).is_file() for fpath in self.get_episodes_file_paths())
+
             self.hf_dataset = self.load_hf_dataset()
         except (AssertionError, FileNotFoundError, NotADirectoryError):
             self.revision = get_safe_version(self.repo_id, self.revision)
