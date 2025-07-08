@@ -46,7 +46,7 @@ def remove_episodes(
     dataset: LeRobotDataset,
     episodes_to_remove: list[int],
     backup: str | Path | bool = False,
-) -> LeRobotDataset:
+):
     """
     Removes specified episodes from a LeRobotDataset and updates all metadata and files accordingly.
 
@@ -108,19 +108,6 @@ def remove_episodes(
         new_meta,
         episodes_to_remove,
     )
-
-    updated_dataset = LeRobotDataset(
-        repo_id=dataset.repo_id,
-        root=dataset.root,
-        episodes=None,  # Load all episodes
-        image_transforms=dataset.image_transforms,
-        delta_timestamps=dataset.delta_timestamps,
-        tolerance_s=dataset.tolerance_s,
-        revision=dataset.revision,
-        download_videos=False,  # No need to download, we just saved them
-        video_backend=dataset.video_backend,
-    )
-
     return updated_dataset
 
 
@@ -350,57 +337,11 @@ def main():
 
     # Modify the dataset
     logging.info(f"Removing {len(set(episodes_to_remove))} episodes: {sorted(set(episodes_to_remove))}")
-    updated_dataset = remove_episodes(
+    remove_episodes(
         dataset=dataset,
         episodes_to_remove=episodes_to_remove,
         backup=backup_value,
     )
-    logging.info(
-        f"Successfully removed episodes. Dataset now has {updated_dataset.meta.total_episodes} episodes."
-    )
-
-    if args.push_to_hub:
-        logging.info("Pushing dataset to hub...")
-
-        updated_dataset.push_to_hub(
-            tags=args.tags,
-            private=bool(args.private),
-            license=args.license,
-            branch=push_branch,
-            tag_version=False,  # Disable automatic tagging here, we'll do it manually later
-        )
-        updated_card = create_lerobot_dataset_card(
-            tags=args.tags, dataset_info=updated_dataset.meta.info, license=args.license
-        )
-        updated_card.push_to_hub(repo_id=updated_dataset.repo_id, repo_type="dataset", revision=push_branch)
-        _remove_episodes_from_hub(updated_dataset, episodes_to_remove, branch=push_branch)
-
-        logging.info(
-            f"Updating tag '{target_revision_tag}' to point to the latest commit on branch '{push_branch}'..."
-        )
-        hub_api = HfApi()
-        try:
-            # Delete the old tag first if it exists
-            with contextlib.suppress(RevisionNotFoundError):
-                hub_api.delete_tag(updated_dataset.repo_id, tag=target_revision_tag, repo_type="dataset")
-                logging.info(f"Deleted existing tag '{target_revision_tag}'.")
-
-            # Create the new tag pointing to the head of the push branch
-            hub_api.create_tag(
-                updated_dataset.repo_id,
-                tag=target_revision_tag,
-                revision=push_branch,
-                repo_type="dataset",
-            )
-            logging.info(
-                f"Successfully created tag '{target_revision_tag}' pointing to branch '{push_branch}'."
-            )
-
-        except Exception as e:
-            logging.error(f"Error during tag update for '{target_revision_tag}': {str(e)}")
-
-        logging.info("Dataset pushed to hub.")
-
 
 if __name__ == "__main__":
     init_logging()
