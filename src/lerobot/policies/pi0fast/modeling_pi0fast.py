@@ -42,7 +42,8 @@ policy = PI0FASTPolicy.from_pretrained("lerobot/pi0fast_base")
 ```
 
 """
-
+import logging
+import time
 from collections import deque
 from functools import partial
 
@@ -60,6 +61,7 @@ from lerobot.constants import ACTION, OBS_STATE
 from lerobot.policies.normalize import Normalize, Unnormalize
 from lerobot.policies.pi0fast.configuration_pi0fast import PI0FASTConfig
 from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.utils.utils import write_action_csv
 
 PRECISION = {
     "float16": torch.float16,
@@ -153,7 +155,8 @@ class PI0FASTPolicy(PreTrainedPolicy):
             config.output_features, config.normalization_mapping, dataset_stats
         )
 
-        self.language_tokenizer = AutoProcessor.from_pretrained("google/paligemma-3b-pt-224")
+        # self.language_tokenizer = AutoProcessor.from_pretrained("google/paligemma-3b-pt-224")
+        self.language_tokenizer = AutoProcessor.from_pretrained("/home/kleist/Documents/Model/paligemma/paligemma-3b-pt-224")
         self.model = PI0FAST(config)
 
         self.reset()
@@ -223,9 +226,8 @@ class PI0FASTPolicy(PreTrainedPolicy):
                 0
             ]  # self.config.max_action_dim  # self.config.action_feature.shape[0]
             actions = actions[:, :, :original_action_dim]
-
             actions = self.unnormalize_outputs({"action": actions})["action"]
-
+            # write_action_csv(actions)
             if self.config.adapt_to_pi_aloha:
                 actions = self._pi_aloha_encode_actions(actions)
 
@@ -405,8 +407,10 @@ class PI0FAST(nn.Module):
         self.config = config
 
         # TODO: move tokenizers in Policy
-        fast_tokenizer_path = "physical-intelligence/fast"
-        pi0_paligemma_path = "google/paligemma-3b-pt-224"
+        # fast_tokenizer_path = "physical-intelligence/fast"
+        # pi0_paligemma_path = "google/paligemma-3b-pt-224"
+        fast_tokenizer_path = "/home/kleist/Documents/Model/fast_tokenizer/fast"
+        pi0_paligemma_path = "/home/kleist/Documents/Model/paligemma/paligemma-3b-pt-224"
         self.paligemma_tokenizer = AutoTokenizer.from_pretrained(pi0_paligemma_path)
         self.processor = AutoProcessor.from_pretrained(pi0_paligemma_path)
         self.fast_tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_path, trust_remote_code=True)
