@@ -155,6 +155,7 @@ def inference_worker(
     独立进程：收到 observation_frame → 预测 → 输出 action_values
     """
     # 1. 只在该进程里加载一次模型 / CUDA
+    init_logging()
     policy = make_policy(cfg_policy, ds_meta=ds_meta) if cfg_policy else None
     device = get_safe_torch_device(policy.config.device)
     use_amp = policy.config.use_amp
@@ -193,7 +194,8 @@ def deploy(cfg: DeployConfig):
     in_q: mp.Queue = ctx.Queue(maxsize=4)   # 根据实时性调节 maxsize
     out_q: mp.Queue = ctx.Queue(maxsize=4)
 
-    task = "pick up the brown pump and put it into the blue box"
+    task = dataset.meta.tasks[0]
+    logging.info(f"task: {task}")
     proc = ctx.Process(
         target=inference_worker,
         args=(in_q, out_q, cfg.policy, dataset.meta, task)

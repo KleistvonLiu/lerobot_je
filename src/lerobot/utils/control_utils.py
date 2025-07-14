@@ -26,6 +26,7 @@ from functools import cache
 import numpy as np
 import torch
 from deepdiff import DeepDiff
+from draccus.utils import is_list
 from termcolor import colored
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -96,6 +97,18 @@ def is_headless():
         print()
         return True
 
+def log_obs_shapes(obs: dict, prefix: str = ""):
+    """递归打印观测字典/张量的 shape。"""
+    for k, v in obs.items():
+        name = f"{prefix}{k}"
+        if isinstance(v, dict):
+            log_obs_shapes(v, prefix=name + ".")
+        elif isinstance(v, (list, tuple)):
+            logging.info(f"{name}: list/tuple of len {len(v)}")
+        elif hasattr(v, "shape"):
+            logging.info(f"{name}: {tuple(v.shape)}")
+        else:
+            logging.info(f"{name}: {type(v)}")
 
 def predict_action(
     observation: dict[str, np.ndarray],
@@ -124,6 +137,7 @@ def predict_action(
 
         # Compute the next action with the policy
         # based on the current observation
+        # log_obs_shapes(observation)
         action = policy.select_action(observation)
 
         # Remove batch dimension
@@ -134,6 +148,42 @@ def predict_action(
 
     return action
 
+def predict_action_v2(
+    observation,
+    policy: PreTrainedPolicy,
+    device: torch.device,
+    use_amp: bool,
+    task: str | None = None,
+    robot_type: str | None = None,
+):
+    observation = copy(observation)
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type=device.type) if device.type == "cuda" and use_amp else nullcontext(),
+    ):
+        # Convert to pytorch format: channel first and float32 in [0,1] with batch dimension
+        for name in observation:
+            if "image" in name:
+                observation[name] = observation[name].type(torch.float32) / 255
+                # observation[name] = observation[name].permute(2, 0, 1).contiguous()
+            observation[name] = observation[name].unsqueeze(0)
+            observation[name] = observation[name].to(device)
+
+        observation["task"] = [task] if task else ""
+        observation["robot_type"] = robot_type if robot_type else ""
+
+        # Compute the next action with the policy
+        # based on the current observation
+        # log_obs_shapes(observation)
+        action = policy.select_action(observation)
+
+        # Remove batch dimension
+        action = action.squeeze(0)
+
+        # Move to cpu, if not already the case
+        action = action.to("cpu")
+
+    return action
 
 def init_keyboard_listener():
     # Allow to exit early while recording an episode or resetting the environment,
