@@ -128,6 +128,7 @@ def replay(cfg: ReplayConfig):
 
     pred_actions = []  # list[Tensor] -> shape (action_dim,)
     gt_actions = []  # list[Tensor] -> shape (action_dim,)
+    gt_observations = []  # list[Tensor] -> shape (action_dim,)
 
     for i in range(len(dataset)):  # 不要遍历 dataset.hf_dataset，而是遍历 dataset 本身
         sample = dataset[i]  # __getitem__ 会自动解码当帧图像
@@ -145,12 +146,15 @@ def replay(cfg: ReplayConfig):
         logging.info(f"inference time cost: {time.perf_counter() - t0:.3f}")
         # 2) 取 Ground-Truth 动作
         gt_action = sample["action"]
-        logging.info(f"ground truth: {gt_action}")
+        gt_observation = sample["observation.state"]
+        logging.info(f"ground truth action: {gt_action}")
+        logging.info(f"ground truth observation: {gt_observation}")
         logging.info(f"predicted: {pred_action}")
 
         # 2) 添加入缓存
         pred_actions.append(pred_action.detach().cpu())
         gt_actions.append(gt_action.detach().cpu())
+        gt_observations.append(gt_observation.detach().cpu())
 
         abs_error_sum += (gt_action - pred_action).abs()
         sq_error_sum += (gt_action - pred_action).pow(2)
@@ -168,13 +172,15 @@ def replay(cfg: ReplayConfig):
     # ─────────── 3. 生成对比曲线 ────────────
     pred_all = torch.stack(pred_actions)  # (T, dof)
     gt_all = torch.stack(gt_actions)  # (T, dof)
+    gt_ob = torch.stack(gt_observations)  # (T, dof)
     T, dof = pred_all.shape
 
     fig, axes = plt.subplots(dof, 1, figsize=(10, 2 * dof), sharex=True)
 
     for d in range(dof):
         ax = axes[d] if dof > 1 else axes
-        ax.plot(gt_all[:, d], label="GT")
+        ax.plot(gt_all[:, d], label="GT Action")
+        ax.plot(gt_ob[:, d], label="GT Observation")
         ax.plot(pred_all[:, d], label="Pred")
         ax.set_ylabel(f"dim {d}")
         ax.legend(loc="upper right")
