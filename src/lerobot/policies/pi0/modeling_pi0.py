@@ -27,7 +27,7 @@ Install pi0 extra dependencies:
 pip install -e ".[pi0]"
 ```
 
-Example of finetuning the pi0 pretrained model (`pi0_base` in `openpi`):
+Example of finetuning the pi0 pretrained model (`pi0_base` in `openpi`)，微调训练好的pi0:
 ```bash
 python -m lerobot.scripts.train \
 --policy.path=lerobot/pi0 \
@@ -35,7 +35,7 @@ python -m lerobot.scripts.train \
 ```
 
 Example of finetuning the pi0 neural network with PaliGemma and expert Gemma
-pretrained with VLM default parameters before pi0 finetuning:
+pretrained with VLM default parameters before pi0 finetuning，重新训练pi0但是不动vlm:
 ```bash
 python -m lerobot.scripts.train \
 --policy.type=pi0 \
@@ -48,7 +48,7 @@ policy = Pi0Policy.from_pretrained("lerobot/pi0")
 ```
 
 """
-
+import logging
 import math
 from collections import deque
 
@@ -292,7 +292,6 @@ class PI0Policy(PreTrainedPolicy):
             actions = self.model.sample_actions(
                 images, img_masks, lang_tokens, lang_masks, state, noise=noise
             )
-
             # Unpad actions
             original_action_dim = self.config.action_feature.shape[0]
             actions = actions[:, :, :original_action_dim]
