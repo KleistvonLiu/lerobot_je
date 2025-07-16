@@ -492,6 +492,8 @@ class PI0FlowMatching(nn.Module):
 
         self.set_requires_grad()
 
+        self.BETA_DIST = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
+
     def set_requires_grad(self):
         for params in self.state_proj.parameters():
             params.requires_grad = self.config.train_state_proj
@@ -510,6 +512,17 @@ class PI0FlowMatching(nn.Module):
         time_beta = sample_beta(1.5, 1.0, bsize, device)
         time = time_beta * 0.999 + 0.001
         return time.to(dtype=torch.float32, device=device)
+
+    def sample_time_new(self, bsize: int, device: torch.device) -> torch.Tensor:
+        """
+        从 Beta(1.5, 1.0) 中采样 bsize 个时间步，
+        再缩放到区间 (0.001, 1.0) 以避免数值极端值。
+        返回 float32 Tensor，位于指定 device。
+        """
+        # 注意 sample 的形状参数必须是 tuple
+        time_beta = self.BETA_DIST.sample((bsize,)).to(device=device, dtype=torch.float32)
+        time = time_beta * 0.999 + 0.001
+        return time
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
@@ -625,7 +638,7 @@ class PI0FlowMatching(nn.Module):
             noise = self.sample_noise(actions.shape, actions.device)
 
         if time is None:
-            time = self.sample_time(actions.shape[0], actions.device)
+            time = self.sample_time_new(actions.shape[0], actions.device)
 
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
