@@ -100,8 +100,9 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         model_id = str(pretrained_name_or_path)
         instance = cls(config, **kwargs)
         if os.path.isdir(model_id):
-            print("Loading weights from local directory")
             model_file = os.path.join(model_id, SAFETENSORS_SINGLE_FILE)
+            logging.info("Loading weights from local directory:")
+            print(model_file)
             policy = cls._load_as_safetensor(instance, model_file, config.device, strict)
         else:
             try:

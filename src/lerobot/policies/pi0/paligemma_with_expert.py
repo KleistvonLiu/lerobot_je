@@ -403,7 +403,12 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
         att_weights = torch.matmul(query_states, key_states.transpose(2, 3))
         att_weights *= head_dim**-0.5
         big_neg = -2.3819763e38  # See gemma/modules.py
-
+        # print(f"masked weights: {att_weights.shape}, attention mask: {attention_mask.shape}")
+        # # --- 修补：裁剪 mask ---
+        # q_len, k_len = att_weights.shape[-2], att_weights.shape[-1]
+        # mask = attention_mask[:, None, :q_len, :k_len]
+        # # 如果 attention_mask 是 (B, k_len, q_len) 顺序，先 .transpose(-2, -1)
+        # masked_att_weights = torch.where(mask, att_weights, big_neg)
         masked_att_weights = torch.where(attention_mask[:, None, :, :], att_weights, big_neg)
 
         probs = nn.functional.softmax(masked_att_weights, dim=-1)

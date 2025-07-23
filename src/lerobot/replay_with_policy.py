@@ -38,6 +38,8 @@ import draccus
 import numpy as np
 import torch
 from datasets import tqdm
+import matplotlib
+matplotlib.use('Agg')  # 非GUI绘图后端
 import matplotlib.pyplot as plt
 
 from lerobot.configs.policies import PreTrainedConfig
@@ -82,6 +84,7 @@ class ReplayConfig:
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
         policy_path = parser.get_path_arg("policy")
+        logging.info(f"Loading policy from {policy_path}")
         if policy_path:
             cli_overrides = parser.get_cli_overrides("policy")
             self.policy = PreTrainedConfig.from_pretrained(policy_path, cli_overrides=cli_overrides)
@@ -103,7 +106,6 @@ def fix_image_axes(obs):
 def replay(cfg: ReplayConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
-
     robot1 = make_robot_from_config(cfg.robot1)
     dataset = LeRobotDataset(cfg.dataset.repo_id, root=cfg.dataset.root, episodes=[cfg.dataset.episode])
     # logging.info(dataset.meta.tasks[0])
@@ -189,7 +191,7 @@ def replay(cfg: ReplayConfig):
     axes[-1].set_xlabel("Frame index")
     fig.suptitle("Predicted vs. Ground-Truth Actions")
     fig.tight_layout()
-    plt.show()
+    plt.savefig("replay_plot.png")
 
     logging.info("Replay finished.")
 

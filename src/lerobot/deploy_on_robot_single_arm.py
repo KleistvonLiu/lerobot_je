@@ -173,7 +173,6 @@ def deploy(cfg: DeployConfig):
     init_logging()
     logging.info(pformat(asdict(cfg)))
 
-
     robot1 = make_robot_from_config(cfg.robot1)
     merged_action_features = {**robot1.action_features}
     merged_observation_features = {**robot1.observation_features}
