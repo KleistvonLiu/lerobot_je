@@ -1,5 +1,8 @@
 import jax
 import torch
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 def sample_beta(alpha, beta, bsize):
@@ -12,43 +15,42 @@ def sample_time(bsize):
     time = time_beta * 0.999 + 0.001
     return time.to(dtype=torch.float32)
 
-batch_size = 10000
-##### lerobot 实现
-# time = sample_time(batch_size)
-# time_samples = sample_time(batch_size).numpy()
+batch_size = 10_000
 
-##### openpi 实现
-seed = 42                          # 任何整数都行
+# ① previous implementation from lerobot
+time_samples1 = sample_time(batch_size).cpu().numpy()
+
+# ② original openpi from pi0 (JAX)
+seed = 42
 rng  = jax.random.PRNGKey(seed)
 rng, time_rng = jax.random.split(rng)
-# time = jax.random.beta(time_rng, 1.5, 1, batch_size) * 0.999 + 0.001
-# time_samples = time
+time2 = jax.random.beta(time_rng, 1.5, 1.0, (batch_size,)) * 0.999 + 0.001
+time_samples2 = np.array(time2)  # JAX → NumPy
 
-##### 我自己测试
-beta_dist  = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
-time_samples = beta_dist.sample((batch_size,)).numpy()      # 注意多了一个圆括号
+# ③ fixed implementation from lerobot (PyTorch Beta)
+beta_dist = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
+time_samples3 = (beta_dist.sample((batch_size,)) * 0.999 + 0.001).cpu().numpy()
 
-#####
-# def true_beta(alpha, beta, size, device=None):
-#     gamma1 = torch.distributions.Gamma(alpha, 1.).sample((size,)).to(device)
-#     gamma2 = torch.distributions.Gamma(beta, 1.).sample((size,)).to(device)
-#     return gamma1 / (gamma1 + gamma2)
-# time = true_beta(1.5, 1.0, batch_size)
-# time_samples = sample_time(batch_size).numpy()
-########
-# ---------- PyTorch ----------
-# batch_shape = (batch_size,)                 # 必须是 tuple
-# time_torch = torch.distributions.Beta(1.5, 1.0).sample(batch_shape)
-# time_samples = time_torch.numpy()
-# ---------- JAX --------------
-# time_jax = jax.random.beta(time_rng, 1.5, 1.0, batch_shape)
+# ---- Plot three subplots ----
+fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True, sharey=True)
 
+bins = 200
+kwargs = dict(bins=bins, density=True, edgecolor="black", alpha=0.7)
 
-# Plot histogram
-plt.figure(figsize=(8, 4))
-plt.hist(time_samples, bins=500, density=True, edgecolor='black', alpha=0.7)
-plt.title("Histogram of sampled time values (Beta(1.5, 1.0) scaled to 0.001–1.0)")
-plt.xlabel("t")
-plt.ylabel("Density")
-plt.tight_layout()
-plt.show()
+axes[0].hist(time_samples1, **kwargs)
+axes[0].set_title("Lerobot previous: Beta(1.5,1.0) scaled to (0.001,1.0)")
+
+axes[1].hist(time_samples2, **kwargs)
+axes[1].set_title("OpenPI (JAX): Beta(1.5,1.0) scaled to (0.001,1.0)")
+
+axes[2].hist(time_samples3, **kwargs)
+axes[2].set_title("Fixed PyTorch: Beta(1.5,1.0) scaled to (0.001,1.0)")
+
+for ax in axes:
+    ax.grid(True, alpha=0.3)
+axes[-1].set_xlabel("t")
+for ax in axes:
+    ax.set_ylabel("Density")
+
+fig.tight_layout()
+fig.savefig("beta_hist_3subplots.png", dpi=200)
