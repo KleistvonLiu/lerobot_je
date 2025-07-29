@@ -530,7 +530,11 @@ class PI0FlowMatching(nn.Module):
         返回 float32 Tensor，位于指定 device。
         """
         # 注意 sample 的形状参数必须是 tuple
-        time_beta = self.BETA_DIST.sample((bsize,)).to(device=device, dtype=torch.float32)
+        # time_beta = self.BETA_DIST.sample((bsize,)).to(device=device, dtype=torch.float32)
+        # time = time_beta * 0.999 + 0.001
+        # return time
+        beta_dist = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
+        time_beta = beta_dist.sample((bsize,)).to(device=device, dtype=torch.float32)
         time = time_beta * 0.999 + 0.001
         return time
 
