@@ -18,6 +18,8 @@ import platform
 from pathlib import Path
 from typing import TypeAlias
 
+import pyorbbecsdk
+
 from .camera import Camera
 from .configs import CameraConfig, Cv2Rotation
 
@@ -26,7 +28,8 @@ IndexOrPath: TypeAlias = int | Path
 
 def make_cameras_from_configs(camera_configs: dict[str, CameraConfig]) -> dict[str, Camera]:
     cameras = {}
-
+    ctx = pyorbbecsdk.Context()
+    device_list = ctx.query_devices()
     for key, cfg in camera_configs.items():
         if cfg.type == "opencv":
             from .opencv import OpenCVCamera
@@ -37,6 +40,10 @@ def make_cameras_from_configs(camera_configs: dict[str, CameraConfig]) -> dict[s
             from .realsense.camera_realsense import RealSenseCamera
 
             cameras[key] = RealSenseCamera(cfg)
+        elif cfg.type == "orbbec":
+            from .orbbec.camera_orbbec import OrbbecCamera
+            cfg.device_list = device_list
+            cameras[key] = OrbbecCamera(cfg)
         else:
             raise ValueError(f"The motor type '{cfg.type}' is not valid.")
 
