@@ -2,56 +2,21 @@ import logging
 import threading
 import time
 from threading import Event, Lock, Thread
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Tuple, List, Dict
 
 import cv2
 import numpy as np
-import pyorbbecsdk as OB
+import pyorbbecsdk as ob
 
 from .configuration_orbbec import OrbbecCameraConfig
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
+from ..camera import Camera
 
 from lerobot.utils.utils import capture_timestamp_utc
 from lerobot.utils.cameras.OButils import i420_to_bgr, nv12_to_bgr, nv21_to_bgr
 
 
-def frame_to_bgr_image(frame: OB.VideoFrame) -> Union[Optional[np.array], Any]:
-    width = frame.get_width()
-    height = frame.get_height()
-    color_format = frame.get_format()
-    data = np.asanyarray(frame.get_data())
-    image = np.zeros((height, width, 3), dtype=np.uint8)
-    # print(f"image format: {color_format}")
-    if color_format == OB.OBFormat.RGB:
-        image = np.resize(data, (height, width, 3))
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    elif color_format == OB.OBFormat.BGR:
-        image = np.resize(data, (height, width, 3))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    elif color_format == OB.OBFormat.YUYV:
-        image = np.resize(data, (height, width, 2))
-        image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUYV)
-    elif color_format == OB.OBFormat.MJPG:
-        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    elif color_format == OB.OBFormat.I420:
-        image = i420_to_bgr(data, width, height)
-        return image
-    elif color_format == OB.OBFormat.NV12:
-        image = nv12_to_bgr(data, width, height)
-        return image
-    elif color_format == OB.OBFormat.NV21:
-        image = nv21_to_bgr(data, width, height)
-        return image
-    elif color_format == OB.OBFormat.UYVY:
-        image = np.resize(data, (height, width, 2))
-        image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_UYVY)
-    else:
-        logging.info("Unsupported color format: {}".format(color_format))
-        return None
-    return image
-
-
-def frame_to_rgb_image(frame: OB.VideoFrame) -> Optional[np.ndarray]:
+def frame_to_rgb_image(frame: ob.VideoFrame) -> Optional[np.ndarray]:
     """将 OB.VideoFrame 转为 RGB ndarray，返回 None 表示不支持的格式或解码失败。"""
     if frame is None:
         return None
@@ -60,31 +25,31 @@ def frame_to_rgb_image(frame: OB.VideoFrame) -> Optional[np.ndarray]:
     height = frame.get_height()
     fmt = frame.get_format()
     buf = frame.get_data()  # memoryview / bytes
-    raw = np.frombuffer(buf, dtype=np.uint8)
+    raw = np.frombuffer(buf, dtype=np.uint8).copy()
 
     try:
-        if fmt == OB.OBFormat.RGB:
+        if fmt == ob.OBFormat.RGB:
             # 已经是 RGB，直接 reshape
             rgb = raw.reshape(height, width, 3)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.BGR:
+        elif fmt == ob.OBFormat.BGR:
             bgr = raw.reshape(height, width, 3)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.YUYV:
+        elif fmt == ob.OBFormat.YUYV:
             # OpenCV 期望 (H, W, 2)
             yuyv = raw.reshape(height, width, 2)
             rgb = cv2.cvtColor(yuyv, cv2.COLOR_YUV2RGB_YUYV)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.UYVY:
+        elif fmt == ob.OBFormat.UYVY:
             uyvy = raw.reshape(height, width, 2)
             rgb = cv2.cvtColor(uyvy, cv2.COLOR_YUV2RGB_UYVY)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.MJPG:
+        elif fmt == ob.OBFormat.MJPG:
             # imdecode 得到 BGR，需要再转 RGB
             bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
             if bgr is None:
@@ -92,18 +57,18 @@ def frame_to_rgb_image(frame: OB.VideoFrame) -> Optional[np.ndarray]:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.I420:
+        elif fmt == ob.OBFormat.I420:
             # I420 (YUV420 planar) 在 OpenCV 中 reshape 为 (H*3/2, W)
             yuv = raw.reshape(height * 3 // 2, width)
             rgb = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB_I420)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.NV12:
+        elif fmt == ob.OBFormat.NV12:
             yuv = raw.reshape(height * 3 // 2, width)
             rgb = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB_NV12)
             return np.ascontiguousarray(rgb)
 
-        elif fmt == OB.OBFormat.NV21:
+        elif fmt == ob.OBFormat.NV21:
             yuv = raw.reshape(height * 3 // 2, width)
             rgb = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB_NV21)
             return np.ascontiguousarray(rgb)
@@ -137,38 +102,51 @@ MIN_DEPTH = 20  # 20mm
 MAX_DEPTH = 10000  # 10000mm
 
 
-class OrbbecCamera:
+class OrbbecCamera(Camera):
     def __init__(
             self,
             config: OrbbecCameraConfig,
     ):
+        super().__init__(config)
+
         self.fps = config.fps
         self.width = config.width
         self.height = config.height
-        self.color_mode = config.color_mode
         self.use_depth = config.use_depth
-        self.mock = config.mock
         self.index_or_path = config.index_or_path
-        self.channels = 3
         self.Hi_resolution_mode = config.Hi_resolution_mode
-
         self.depth_height = None
-        if self.use_depth:
-            match self.width:
-                case 640:
-                    self.depth_height = 400
-                case 1280:
-                    self.depth_height = 800
+        # if self.use_depth:
+        #     match self.width:
+        #         case 640:
+        #             self.depth_height = 400
+        #         case 1280:
+        #             self.depth_height = 800
 
-        self.camera = None
-        self.is_connected = False
-        self.thread = None
-        self.stop_event = None
+        self.camera_pipeline = None
+        self.is_connected_used = False
+        self.thread: Thread | None = None
+        self.stop_event: Event | None = None
+        self.frame_lock: Lock = Lock()
+        # self.latest_color_frame: np.ndarray | None = None
+        # self.latest_depth_frame: np.ndarray | None = None
+        self.latest_frame: np.ndarray | None = None
+        self.new_frame_event: Event = Event()
         self.color_image = None
         self.depth_map = None
         self.logs = {}
         self.temporal_filter = TemporalFilter(config.TemporalFilter_alpha)
         self.device = config.device_list.get_device_by_serial_number(self.index_or_path)
+
+    @property
+    def is_connected(self) -> bool:
+        """Checks if the camera is currently connected and opened."""
+        return self.is_connected_used
+
+    @staticmethod
+    def find_cameras() -> List[Dict[str, Any]]:
+        logging.error("this method is not implemented")
+        return None
 
     def fuse_color_and_depth(self, color_image, depth_rgb_packed) -> np.ndarray:
         if color_image.shape[1] != depth_rgb_packed.shape[1]:
@@ -179,54 +157,94 @@ class OrbbecCamera:
 
     def load_depth_config(self):
         try:
-            profile_list = self.camera.get_stream_profile_list(OB.OBSensorType.DEPTH_SENSOR)
+            profile_list = self.camera_pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
             assert profile_list is not None
             depth_profile = profile_list.get_video_stream_profile(
-                self.width, self.depth_height, OB.OBFormat.Y16, self.fps
+                self.width, self.depth_height, ob.OBFormat.Y16, self.fps
             )
             assert depth_profile is not None
             logging.info("\033[32mDEPTH Profile Loaded:\033[0m", depth_profile)
-            self.OBconfig.enable_stream(depth_profile)
+            self.ob_config.enable_stream(depth_profile)
         except Exception as e:
             logging.info(e)
             return
 
     def load_color_config(self):
         try:
-            profile_list = self.camera.get_stream_profile_list(OB.OBSensorType.COLOR_SENSOR)
+            profile_list = self.camera_pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
             assert profile_list is not None
             color_profile = profile_list.get_video_stream_profile(
-                self.width, self.height, OB.OBFormat.RGB, self.fps
+                self.width, self.height, ob.OBFormat.RGB, self.fps
             )
             assert color_profile is not None
             logging.info("\033[32mCOLOR Profile Loaded:\033[0m ", color_profile)
-            self.OBconfig.enable_stream(color_profile)
+            self.ob_config.enable_stream(color_profile)
         except Exception as e:
             logging.info(e)
             return
 
+    def _get_stream_config(self, pipeline: ob.Pipeline):
+        """
+        Gets the stream configuration for the pipeline.
+
+        Args:
+            pipeline (Pipeline): The pipeline object.
+
+        Returns:
+            Config: The stream configuration.
+        """
+        config = ob.Config()
+        try:
+            # Get the list of color stream profiles
+            profile_list = pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
+            assert profile_list is not None
+
+            # Iterate through the color stream profiles
+            for i in range(len(profile_list)):
+                color_profile = profile_list[i]
+
+                # Check if the color format is RGB
+                if color_profile.get_format() != ob.OBFormat.RGB:
+                    continue
+
+                # Get the list of hardware aligned depth-to-color profiles
+                hw_d2c_profile_list = pipeline.get_d2c_depth_profile_list(color_profile, ob.OBAlignMode.HW_MODE)
+                if len(hw_d2c_profile_list) == 0:
+                    continue
+
+                # Get the first hardware aligned depth-to-color profile
+                hw_d2c_profile = hw_d2c_profile_list[0]
+                print("hw_d2c_profile: ", hw_d2c_profile)
+
+                # Enable the depth and color streams
+                config.enable_stream(hw_d2c_profile)
+                config.enable_stream(color_profile)
+
+                # Set the alignment mode to hardware alignment
+                config.set_align_mode(ob.OBAlignMode.HW_MODE)
+                return config
+        except Exception as e:
+            print(e)
+            return None
+        return None
+
     def connect(self):
-        if self.is_connected:
+        if self.is_connected_used:
             raise DeviceAlreadyConnectedError("OrbbecCamera is readyConnected")
-        if self.mock:
-            logging.info("Waring!!MockMode is under repairing")
-            return
 
         logging.info("\033[32mHello! Orbbec!\033[0m")
 
-        self.OBconfig = OB.Config()
-        self.camera = OB.Pipeline(self.device)
+        self.camera_pipeline = ob.Pipeline(self.device)
 
-        if self.use_depth:
-            self.load_depth_config()
+        self.ob_config = self._get_stream_config(self.camera_pipeline)
+        if self.ob_config is None:
+            logging.error("Camera connection failed")
+            return
+        self.camera_pipeline.start(self.ob_config)
 
-        self.load_color_config()
-
-        self.camera.start(self.OBconfig)
-
-        self.is_connected = True
+        self.is_connected_used = True
+        time.sleep(1)
         logging.info("\033[32mCAMERA CONNECTED\033[0m ")
-        time.sleep(5)
 
     def HandleDepth(self, depth_frame):
         if depth_frame is None:
@@ -261,51 +279,104 @@ class OrbbecCamera:
             filtered_depth_data = cv2.applyColorMap(filtered_depth_data, cv2.COLORMAP_JET)
         return filtered_depth_data
 
-    def read(self):
+    def _post_process_depth_frame(self, depth_frame):
+        if not depth_frame:
+            logging.error("No depth frame received")
+            return None
+
+        h, w = depth_frame.get_height(), depth_frame.get_width()
+        buf = depth_frame.get_data()  # 原始字节
+        depth_u16 = np.frombuffer(buf, dtype=np.uint16, count=h * w).reshape(h, w, 1).copy()  # 无损 + 自有拷贝
+        # 可选：确认是C连续
+        assert depth_u16.flags['C_CONTIGUOUS']
+
+        return depth_u16
+
+    def read(self) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
+        """
+        Returns:
+            - use_depth == False: 返回 color_image (H, W, 3) 的 np.ndarray
+            - use_depth == True : 返回 (color_image, depth_map)
+            - 发生异常/丢帧: 返回 None
+        """
+        if not self.is_connected_used:
+            raise DeviceNotConnectedError(f"{self.index_or_path} is not connected.")
+
         start_time = time.perf_counter()
-        frames = self.camera.wait_for_frames(100)
+        frames = self.camera_pipeline.wait_for_frames(100)
         if frames is None:
-            logging.info("No frames received")
-        if self.use_depth:
-            depth_frame = frames.get_depth_frame()
-            if depth_frame is None:
-                logging.info("No depth frame received")
+            logging.warning("No frames received")
+            return None
 
-            self.depth_map = self.HandleDepth(depth_frame)
-
+        # 获取彩色帧与（可选）深度帧
         color_frame = frames.get_color_frame()
+        depth_frame = frames.get_depth_frame() if self.use_depth else None
 
-        if color_frame is None:
-            logging.info("No color frame received")
+        if not color_frame or (self.use_depth and (not depth_frame)):
+            logging.error(f"No frames received, color:{color_frame}, depth:{depth_frame}")
+            return None
 
-        self.color_image = frame_to_rgb_image(color_frame)
+        # 转成 numpy 彩色图
+        color_image = frame_to_rgb_image(color_frame)
+        if color_image is None:
+            logging.info("failed to convert color frame to image")
+            return None
 
-        if self.color_image is None:
-            logging.info("failed to convert frame to image")
+        result: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]] = color_image
 
+        # 仅在启用深度时才做后处理与返回
+        if self.use_depth:
+            depth_map = self._post_process_depth_frame(depth_frame)  # 期望返回 np.ndarray
+            if not depth_map:
+                logging.info("failed to post-process depth frame")
+                return None
+            result = (color_image, depth_map)
+
+        # 同步原有日志与成员
+        self.color_image = color_image
         self.logs["delta_timestamp_s"] = time.perf_counter() - start_time
-
-        # log the utc time at which the image was received
         self.logs["timestamp_utc"] = capture_timestamp_utc()
 
+        return result
+
     def _read_loop(self):
-        logging.info(f"start read loop for {self.index_or_path}")
+        """
+        Background loop:
+        - self.read() -> color 或 (color, depth)
+        - 赋值到 self.lastest_color_image / self.latest_depth_image
+        - 通知有新帧
+        """
         while not self.stop_event.is_set():
             try:
-                self.read()
-            except Exception as e:
-                logging.info(e)
+                result = self.read()  # None | np.ndarray | (np.ndarray, np.ndarray)
+                if result is None:
+                    time.sleep(0.001)
+                    continue
+
+                with self.frame_lock:
+                    # 你要求的字段
+                    self.latest_frame = result
+                    # self.latest_color_frame = color_image
+                    # self.latest_depth_frame = depth_map  # 可能是 None
+                self.new_frame_event.set()
+
+            except DeviceNotConnectedError:
                 break
+            except Exception:
+                # 使用 exc_info=True 会自动附加异常信息和堆栈跟踪
+                camera_id = self.index_or_path if self.index_or_path is not None else "Unknown"
+                logging.error(f"Unhandled exception in background thread for camera {camera_id}", exc_info=True)
+                # logging.error(f"Error reading frame in background thread for: {e}")
 
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""
         if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=0.1)
-        if self.stop_event is not None:
-            self.stop_event.set()
+            if self.stop_event is not None:
+                self.stop_event.set()
+            self.thread.join(timeout=2.0)
 
         self.stop_event = Event()
-        self.thread = Thread(target=self._read_loop, args=(), name=f"{self}_read_loop")
+        self.thread = Thread(target=self._read_loop, args=(), name=f"{self.index_or_path}_read_loop")
         self.thread.daemon = True
         self.thread.start()
 
@@ -320,42 +391,64 @@ class OrbbecCamera:
         self.thread = None
         self.stop_event = None
 
-    def async_read(self):
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+    def async_read(self, timeout_ms: float = 200) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
+        """
+        Reads the latest available frame asynchronously.
+
+        This method retrieves the most recent frame captured by the background
+        read thread. It does not block waiting for the camera hardware directly,
+        but may wait up to timeout_ms for the background thread to provide a frame.
+
+        Args:
+            timeout_ms (float): Maximum time in milliseconds to wait for a frame
+                to become available. Defaults to 200ms (0.2 seconds).
+
+        Returns:
+            - use_depth == False: 返回 color_image (H, W, 3) 的 np.ndarray
+            - use_depth == True : 返回 (color_image, depth_map)
+            - 发生异常/丢帧: 返回 None
+
+        Raises:
+            DeviceNotConnectedError: If the camera is not connected.
+            TimeoutError: If no frame becomes available within the specified timeout.
+            RuntimeError: If an unexpected error occurs.
+        """
+        if not self.is_connected_used:
+            raise DeviceNotConnectedError(f"{self.index_or_path} is not connected.")
 
         if self.thread is None or not self.thread.is_alive():
             self._start_read_thread()
 
-        num_tries = 0
-        while self.color_image is None:
-            # TODO(rcadene, aliberts): intelrealsense has diverged compared to opencv over here
-            num_tries += 1
-            time.sleep(1 / self.fps)
-            # if num_tries > self.fps and (self.thread.ident is None or not self.thread.is_alive()):
-            # raise Exception(
-            # logging.info(   "The thread responsible for `self.async_read()` took too much time to start. There might be an issue. Verify that `self.thread.start()` has been called.")######可能一直报错
+        if not self.new_frame_event.wait(timeout=timeout_ms / 1000.0):
+            thread_alive = self.thread is not None and self.thread.is_alive()
+            raise TimeoutError(
+                f"Timed out waiting for frame from camera {self.index_or_path} after {timeout_ms} ms. "
+                f"Read thread alive: {thread_alive}."
+            )
 
-        if self.use_depth:
-            return self.fuse_color_and_depth(self.color_image, self.depth_map)
+        with self.frame_lock:
+            frame = self.latest_frame
+            self.new_frame_event.clear()
 
-        else:
-            return self.color_image
+        if frame is None:
+            raise RuntimeError(f"Internal error: Event set but no frame available for {self.index_or_path}.")
+
+        return frame
 
     def disconnect(self):
-        if not self.is_connected:
-            raise DeviceAlreadyConnectedError(
-                f"IntelRealSenseCamera({self.serial_number}) is not connected. Try running `camera.connect()` first."
+        if not self.is_connected_used:
+            raise DeviceNotConnectedError(
+                f"Orbbec camera ({self.index_or_path}) is not connected. Try running `camera.connect()` first."
             )
 
         if self.thread is not None and self.thread.is_alive():
             self._stop_read_thread()
 
-        self.camera.stop()
-        self.camera = None
+        self.camera_pipeline.stop()
+        self.camera_pipeline = None
 
-        self.is_connected = False
-        logging.info(f"{self} disconnected.")
+        self.is_connected_used = False
+        logging.info(f"{self.index_or_path} disconnected.")
 
     def test_read(self):
         if self.thread is None:
@@ -364,25 +457,23 @@ class OrbbecCamera:
             self.thread.daemon = True
             self.thread.start()
 
-
-if __name__ == "__main__":
-    # Create a configuration for the OrbbecCamera
-    config = OrbbecCameraConfig(
-        fps=30,
-        width=640,
-        height=480,
-        color_mode="bgr",
-        use_depth=True,
-        mock=False,
-        index_or_path=0,
-    )
-
-    # Initialize the camera
-    camera = OrbbecCamera(config)
-    # Connect to the camera
-    camera.connect()
-    time.sleep(10)
-
-    # Start asynchronous reading
-    while True:
-        camera.async_read()
+# if __name__ == "__main__":
+#     # Create a configuration for the OrbbecCamera
+#     config = OrbbecCameraConfig(
+#         fps=30,
+#         width=640,
+#         height=480,
+#         color_mode="bgr",
+#         use_depth=False,
+#         index_or_path=0,
+#     )
+#
+#     # Initialize the camera
+#     camera = OrbbecCamera(config)
+#     # Connect to the camera
+#     camera.connect()
+#     time.sleep(10)
+#
+#     # Start asynchronous reading
+#     while True:
+#         camera.async_read()

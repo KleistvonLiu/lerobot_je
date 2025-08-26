@@ -55,6 +55,7 @@ class Camera(abc.ABC):
         self.fps: int | None = config.fps
         self.width: int | None = config.width
         self.height: int | None = config.height
+        self.use_depth: bool | None = config.use_depth
 
     @property
     @abc.abstractmethod

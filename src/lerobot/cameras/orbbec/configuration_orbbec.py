@@ -22,17 +22,17 @@ from ..configs import CameraConfig, ColorMode, Cv2Rotation
 @CameraConfig.register_subclass("orbbec")
 @dataclass
 class OrbbecCameraConfig(CameraConfig):
-    fps: int | None = None
-    width: int | None = None
-    height: int | None = None
+    # fps: int | None = None
+    # width: int | None = None
+    # height: int | None = None
+    # use_depth: bool = False
     color_mode: str = "rgb"
-    use_depth: bool = False
     mock: bool = False
     index_or_path: str = None
     channels: int = 3
     TemporalFilter_alpha: float = 0.5
     Hi_resolution_mode: bool = False
-    device_list: pyorbbecsdk.DeviceList = None
+    # device_list: pyorbbecsdk.DeviceList = None
 
     def __post_init__(self):
         # bool is stronger than is None, since it works with empty strings
@@ -43,18 +43,6 @@ class OrbbecCameraConfig(CameraConfig):
             )
         if self.width is None:
             raise ValueError("`height` is expected to be 'None' .")
-        if self.use_depth:
-            match self.width:
-                case 640:
-                    self.height = 480 + 400
-                case 1280:
-                    self.height = 720 + 800
-        if not self.use_depth:
-            match self.width:
-                case 640:
-                    self.height = 480
-                case 1280:
-                    self.height = 720
         at_least_one_is_not_none = self.fps is not None or self.width is not None or self.height is not None
         at_least_one_is_none = self.fps is None or self.width is None or self.height is None
         if at_least_one_is_not_none and at_least_one_is_none:

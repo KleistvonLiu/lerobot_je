@@ -59,10 +59,18 @@ class AlohaAgileXFollower(Robot):
         return {self.id + f".joint{i}.pos": float for i in range(7)}
 
     @property
-    def _cameras_ft(self) -> dict[str, tuple]:
-        return {
-            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
+    def _cameras_ft(self) -> dict[str, tuple[int, int, int]]:
+        base = {
+            cam: (self.config.cameras[cam].height,
+                  self.config.cameras[cam].width, 3)
+            for cam in self.cameras
         }
+        depth = {
+                f"{cam}_depth": (self.config.cameras[cam].height,
+                                 self.config.cameras[cam].width, 1)
+                for cam in self.cameras if self.cameras[cam].use_depth
+            }
+        return {**base, **depth}
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -130,7 +138,13 @@ class AlohaAgileXFollower(Robot):
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             # start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
+            camera_frame = cam.async_read()
+            if isinstance(camera_frame, tuple):
+                color_image, depth_map = camera_frame
+                obs_dict[cam_key] = color_image
+                obs_dict[cam_key + "_depth"] = depth_map
+            else:
+                obs_dict[cam_key] = camera_frame
             # dt_ms = (time.perf_counter() - start) * 1e3
             # logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 

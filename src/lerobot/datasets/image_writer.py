@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+import logging
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,19 +40,20 @@ def safe_stop_image_writer(func):
 
 def image_array_to_pil_image(image_array: np.ndarray, range_check: bool = True) -> PIL.Image.Image:
     # TODO(aliberts): handle 1 channel and 4 for depth images
-    if image_array.ndim != 3:
-        raise ValueError(f"The array has {image_array.ndim} dimensions, but 3 is expected for an image.")
+    if image_array.ndim != 3 and image_array.ndim != 1:
+        raise ValueError(f"The array has {image_array.ndim} dimensions, but 1 or 3 is expected for an image.")
 
-    if image_array.shape[0] == 3:
+    if image_array.shape[0] == 3 or image_array.shape[0] == 1:
         # Transpose from pytorch convention (C, H, W) to (H, W, C)
         image_array = image_array.transpose(1, 2, 0)
 
-    elif image_array.shape[-1] != 3:
+    elif image_array.shape[-1] != 3 and image_array.shape[-1] != 1:
         raise NotImplementedError(
-            f"The image has {image_array.shape[-1]} channels, but 3 is required for now."
+            f"The image has {image_array.shape[-1]} channels, but 1 or 3 is required for now."
         )
 
-    if image_array.dtype != np.uint8:
+    if image_array.dtype != np.uint8 and image_array.dtype != np.uint16:
+        logging.warning(f"The image has {image_array.dtype} dtype")
         if range_check:
             max_ = image_array.max().item()
             min_ = image_array.min().item()
@@ -65,6 +66,8 @@ def image_array_to_pil_image(image_array: np.ndarray, range_check: bool = True) 
 
         image_array = (image_array * 255).astype(np.uint8)
 
+    if image_array.ndim == 3 and image_array.shape[2] == 1:
+        image_array = image_array[..., 0]
     return PIL.Image.fromarray(image_array)
 
 
