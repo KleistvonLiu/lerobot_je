@@ -10,6 +10,7 @@ import pyorbbecsdk as ob
 
 from .configuration_orbbec import OrbbecCameraConfig
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
+from .. import ColorMode
 from ..camera import Camera
 
 from lerobot.utils.utils import capture_timestamp_utc
@@ -114,22 +115,14 @@ class OrbbecCamera(Camera):
         self.height = config.height
         self.use_depth = config.use_depth
         self.index_or_path = config.index_or_path
+        self.warmup_s = config.warmup_s
         self.Hi_resolution_mode = config.Hi_resolution_mode
         self.depth_height = None
-        # if self.use_depth:
-        #     match self.width:
-        #         case 640:
-        #             self.depth_height = 400
-        #         case 1280:
-        #             self.depth_height = 800
-
         self.camera_pipeline = None
         self.is_connected_used = False
         self.thread: Thread | None = None
         self.stop_event: Event | None = None
         self.frame_lock: Lock = Lock()
-        # self.latest_color_frame: np.ndarray | None = None
-        # self.latest_depth_frame: np.ndarray | None = None
         self.latest_frame: np.ndarray | None = None
         self.new_frame_event: Event = Event()
         self.color_image = None
@@ -147,41 +140,6 @@ class OrbbecCamera(Camera):
     def find_cameras() -> List[Dict[str, Any]]:
         logging.error("this method is not implemented")
         return None
-
-    def fuse_color_and_depth(self, color_image, depth_rgb_packed) -> np.ndarray:
-        if color_image.shape[1] != depth_rgb_packed.shape[1]:
-            raise ValueError("Width mismatch between color and depth images.")
-
-        stacked = np.vstack((color_image, depth_rgb_packed))
-        return stacked
-
-    def load_depth_config(self):
-        try:
-            profile_list = self.camera_pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
-            assert profile_list is not None
-            depth_profile = profile_list.get_video_stream_profile(
-                self.width, self.depth_height, ob.OBFormat.Y16, self.fps
-            )
-            assert depth_profile is not None
-            logging.info("\033[32mDEPTH Profile Loaded:\033[0m", depth_profile)
-            self.ob_config.enable_stream(depth_profile)
-        except Exception as e:
-            logging.info(e)
-            return
-
-    def load_color_config(self):
-        try:
-            profile_list = self.camera_pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
-            assert profile_list is not None
-            color_profile = profile_list.get_video_stream_profile(
-                self.width, self.height, ob.OBFormat.RGB, self.fps
-            )
-            assert color_profile is not None
-            logging.info("\033[32mCOLOR Profile Loaded:\033[0m ", color_profile)
-            self.ob_config.enable_stream(color_profile)
-        except Exception as e:
-            logging.info(e)
-            return
 
     def _get_stream_config(self, pipeline: ob.Pipeline):
         """
@@ -228,7 +186,7 @@ class OrbbecCamera(Camera):
             return None
         return None
 
-    def connect(self):
+    def connect(self, warmup: bool = True):
         if self.is_connected_used:
             raise DeviceAlreadyConnectedError("OrbbecCamera is readyConnected")
 
@@ -236,15 +194,19 @@ class OrbbecCamera(Camera):
 
         self.camera_pipeline = ob.Pipeline(self.device)
 
-        self.ob_config = self._get_stream_config(self.camera_pipeline)
-        if self.ob_config is None:
+        ob_config = self._get_stream_config(self.camera_pipeline)
+        if ob_config is None:
             logging.error("Camera connection failed")
             return
-        self.camera_pipeline.start(self.ob_config)
+        self.camera_pipeline.start(ob_config)
 
         self.is_connected_used = True
-        time.sleep(1)
-        logging.info("\033[32mCAMERA CONNECTED\033[0m ")
+        if warmup:
+            start_time = time.time()
+            while time.time() - start_time < self.warmup_s:
+                self.read()
+                time.sleep(0.1)
+        logging.info(f"Camera {self.index_or_path} connected!")
 
     def HandleDepth(self, depth_frame):
         if depth_frame is None:
@@ -292,7 +254,7 @@ class OrbbecCamera(Camera):
 
         return depth_u16
 
-    def read(self) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
+    def read(self, color_mode: ColorMode | None = None) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
         """
         Returns:
             - use_depth == False: 返回 color_image (H, W, 3) 的 np.ndarray
@@ -313,8 +275,9 @@ class OrbbecCamera(Camera):
         depth_frame = frames.get_depth_frame() if self.use_depth else None
 
         if not color_frame or (self.use_depth and (not depth_frame)):
-            logging.error(f"No frames received, color:{color_frame}, depth:{depth_frame}")
+            # logging.error(f"Camera {self.index_or_path} receives no frames, color:{not not color_frame}, depth:{not not depth_frame}")
             return None
+        # logging.error(f"Camera {self.index_or_path} receives all frames, color:{not not color_frame}, depth:{not not depth_frame}")
 
         # 转成 numpy 彩色图
         color_image = frame_to_rgb_image(color_frame)
@@ -327,7 +290,7 @@ class OrbbecCamera(Camera):
         # 仅在启用深度时才做后处理与返回
         if self.use_depth:
             depth_map = self._post_process_depth_frame(depth_frame)  # 期望返回 np.ndarray
-            if not depth_map:
+            if depth_map is None:
                 logging.info("failed to post-process depth frame")
                 return None
             result = (color_image, depth_map)
@@ -347,7 +310,7 @@ class OrbbecCamera(Camera):
         - 通知有新帧
         """
         while not self.stop_event.is_set():
-            try:
+            # try:
                 result = self.read()  # None | np.ndarray | (np.ndarray, np.ndarray)
                 if result is None:
                     time.sleep(0.001)
@@ -360,13 +323,13 @@ class OrbbecCamera(Camera):
                     # self.latest_depth_frame = depth_map  # 可能是 None
                 self.new_frame_event.set()
 
-            except DeviceNotConnectedError:
-                break
-            except Exception:
-                # 使用 exc_info=True 会自动附加异常信息和堆栈跟踪
-                camera_id = self.index_or_path if self.index_or_path is not None else "Unknown"
-                logging.error(f"Unhandled exception in background thread for camera {camera_id}", exc_info=True)
-                # logging.error(f"Error reading frame in background thread for: {e}")
+            # except DeviceNotConnectedError:
+            #     break
+            # except Exception:
+            #     # 使用 exc_info=True 会自动附加异常信息和堆栈跟踪
+            #     camera_id = self.index_or_path if self.index_or_path is not None else "Unknown"
+            #     logging.error(f"Unhandled exception in background thread for camera {camera_id}", exc_info=True)
+            #     # logging.error(f"Error reading frame in background thread for: {e}")
 
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""

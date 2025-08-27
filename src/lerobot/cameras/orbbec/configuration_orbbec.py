@@ -13,11 +13,8 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from pathlib import Path
 
-import pyorbbecsdk
-
-from ..configs import CameraConfig, ColorMode, Cv2Rotation
+from ..configs import CameraConfig
 
 @CameraConfig.register_subclass("orbbec")
 @dataclass
@@ -32,6 +29,7 @@ class OrbbecCameraConfig(CameraConfig):
     channels: int = 3
     TemporalFilter_alpha: float = 0.5
     Hi_resolution_mode: bool = False
+    warmup_s: int = 1
     # device_list: pyorbbecsdk.DeviceList = None
 
     def __post_init__(self):
