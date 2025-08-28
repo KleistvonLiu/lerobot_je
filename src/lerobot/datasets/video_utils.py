@@ -26,6 +26,7 @@ import os
 os.environ["SVT_LOG"] = "1"   # 小心：必须在 import av 之前
 import av
 import pyarrow as pa
+import numpy as np
 import torch
 import torchvision
 from datasets.features.features import register_feature
@@ -331,6 +332,148 @@ def encode_video_frames(
 
     if not video_path.exists():
         raise OSError(f"Video encoding did not work. File not found: {video_path}.")
+
+def encode_video_frames_depth_image(
+    imgs_dir: Path | str,
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    log_level: int | None = av.logging.ERROR,
+    overwrite: bool = False,
+    depth_image: bool = False,   # 新增：深度图无损模式（MKV+FFV1+gray16le）
+) -> None:
+    """Encode a sequence of images into a video.
+
+    - Normal mode (depth_image=False): h264/hevc/libsvtav1 with chosen pix_fmt.
+    - Depth mode   (depth_image=True): MKV container + FFV1 codec + gray16le (lossless 16-bit).
+    """
+
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
+    video_path.parent.mkdir(parents=True, exist_ok=True if overwrite else True)
+
+    # Get input frames
+    template = "frame_" + ("[0-9]" * 6) + ".png"
+    input_list = sorted(
+        glob.glob(str(imgs_dir / template)),
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),
+    )
+    if len(input_list) == 0:
+        raise FileNotFoundError(f"No images found in {imgs_dir} matching {template}.")
+
+    # Determine size from the first frame
+    first = Image.open(input_list[0])
+    width, height = first.size
+
+    # Set logging level for PyAV/FFmpeg
+    if log_level is not None:
+        logging.getLogger("libav").setLevel(log_level)
+
+    # -------------------------------
+    # Depth (lossless) path: MKV+FFV1
+    # -------------------------------
+    if depth_image:
+        # Ensure MKV container
+        if video_path.suffix.lower() != ".mkv":
+            logging.warning(
+                f"Depth mode requires MKV container; changing suffix to .mkv: {video_path}"
+            )
+            video_path = video_path.with_suffix(".mkv")
+
+        # Open output & add FFV1 stream (lossless), 16-bit gray
+        with av.open(str(video_path), mode="w") as output:
+            # options: level=3 是常用选择；不设置也可
+            output_stream = output.add_stream("ffv1", rate=fps, options={"level": "3"})
+            output_stream.width = width
+            output_stream.height = height
+            output_stream.pix_fmt = "gray16le"
+
+            for p in input_list:
+                # 读取单通道 16-bit（PNG I;16）
+                img = Image.open(p)
+                arr = np.array(img, dtype=np.uint16)
+
+                # 形状校验：必须是 (H,W) 单通道
+                if arr.ndim == 3 and arr.shape[-1] == 1:
+                    arr = arr[..., 0]
+                if arr.ndim != 2:
+                    raise ValueError(
+                        f"Depth image must be single-channel; got shape {arr.shape} for {p}"
+                    )
+
+                # 保证 C 连续 & dtype 正确
+                arr = np.ascontiguousarray(arr, dtype=np.uint16)
+
+                # 创建帧（gray16le）
+                frame = av.VideoFrame.from_ndarray(arr, format="gray16le")
+                packet = output_stream.encode(frame)
+                if packet:
+                    output.mux(packet)
+
+            # flush
+            packet = output_stream.encode(None)
+            if packet:
+                output.mux(packet)
+
+        # Reset logging
+        if log_level is not None:
+            av.logging.restore_default_callback()
+
+        if not video_path.exists():
+            raise OSError(f"Video encoding failed: {video_path} not found.")
+        return
+
+    # ----------------------------------------
+    # Normal path: h264/hevc/libsvtav1 (lossy)
+    # ----------------------------------------
+    if vcodec not in ["h264", "hevc", "libsvtav1"]:
+        raise ValueError(f"Unsupported video codec: {vcodec}. Supported: h264, hevc, libsvtav1.")
+
+    # Simple compatibility: some encoders dislike yuv444p by default
+    if (vcodec in ("libsvtav1", "hevc")) and pix_fmt == "yuv444p":
+        logging.warning(
+            f"Incompatible pixel format 'yuv444p' for codec {vcodec}, auto-selecting 'yuv420p'"
+        )
+        pix_fmt = "yuv420p"
+
+    video_options: dict[str, str] = {}
+    if g is not None:
+        video_options["g"] = str(g)
+    if crf is not None:
+        video_options["crf"] = str(crf)
+    if fast_decode:
+        key = "svtav1-params" if vcodec == "libsvtav1" else "tune"
+        value = f"fast-decode={fast_decode}" if vcodec == "libsvtav1" else "fastdecode"
+        video_options[key] = value
+
+    with av.open(str(video_path), "w") as output:
+        output_stream = output.add_stream(vcodec, fps, options=video_options)
+        output_stream.pix_fmt = pix_fmt
+        output_stream.width = width
+        output_stream.height = height
+
+        for p in input_list:
+            # 正常彩色可视化：转 RGB
+            input_image = Image.open(p).convert("RGB")
+            input_frame = av.VideoFrame.from_image(input_image)
+            packet = output_stream.encode(input_frame)
+            if packet:
+                output.mux(packet)
+
+        packet = output_stream.encode()
+        if packet:
+            output.mux(packet)
+
+    if log_level is not None:
+        av.logging.restore_default_callback()
+
+    if not video_path.exists():
+        raise OSError(f"Video encoding failed: {video_path} not found.")
+
 
 def encode_video_frames_fast(
     imgs_dir: Path | str,

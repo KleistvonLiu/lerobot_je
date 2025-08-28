@@ -25,7 +25,7 @@ from copy import copy, deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
-from typing import Union, Sequence
+from typing import Union, Sequence, Any, Dict
 
 import numpy as np
 import torch
@@ -416,3 +416,82 @@ def write_action_csv(
             writer.writerow(header)
 
         writer.writerows(flat.tolist())
+
+def append_depth_arrays_to_txt(
+    observation: Dict[Any, Any],
+    txt_path: Union[str, Path],
+    target_shape=(480, 640, 1),   # H, W, C 其中 C 必须为 1
+    dtype=np.uint16,
+) -> int:
+    """
+    遍历 observation（可嵌套 dict），凡是 key 含 'depth' 且 value 是 np.ndarray，
+    规范为 target_shape (默认 (480,640,1))，并以文本块形式 **追加** 写入 txt_path。
+
+    文本格式（示例）：
+      # BEGIN key=nested.left_depth timestamp=2025-08-26T08:12:34.567Z shape=480x640 dtype=uint16
+      0 0 1 1 2 ...  (共 480 行，每行 640 个整数)
+      ...
+      # END key=nested.left_depth
+
+    返回：本次写入的数组块数量
+    """
+    Ht, Wt, Ct = target_shape
+    if Ct != 1:
+        raise ValueError("target_shape 的最后一维必须为 1（单通道）")
+    txt_path = Path(txt_path)
+
+    def _norm_depth(arr: np.ndarray) -> np.ndarray:
+        """把 (H,W)/(W,H)/(H,W,1)/(W,H,1) 统一成 (Ht,Wt,1)，并保证 C-contiguous 与 dtype。"""
+        a = np.asarray(arr)
+        if a.ndim == 2:
+            h, w = a.shape
+            if (h, w) == (Ht, Wt):
+                a = a[..., None]
+            elif (h, w) == (Wt, Ht):
+                a = a.T[..., None]
+            else:
+                raise ValueError(f"意外形状: {a.shape}，期望 {(Ht,Wt)} 或 {(Wt,Ht)}")
+        elif a.ndim == 3 and a.shape[2] == 1:
+            h, w, _ = a.shape
+            if (h, w) == (Ht, Wt):
+                pass
+            elif (h, w) == (Wt, Ht):
+                a = np.transpose(a, (1, 0, 2))
+            else:
+                raise ValueError(f"意外形状: {a.shape}，期望 {(Ht,Wt,1)} 或 {(Wt,Ht,1)}")
+        else:
+            raise ValueError(f"不支持的深度维度: {a.shape}")
+        return np.ascontiguousarray(a, dtype=dtype)
+
+    def _walk(d: Dict[Any, Any], prefix: str = "") -> list[tuple[str, np.ndarray]]:
+        out = []
+        for k, v in d.items():
+            name = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, dict):
+                out.extend(_walk(v, name))
+            else:
+                if "depth" in str(k).lower() and isinstance(v, np.ndarray):
+                    try:
+                        out.append((name, _norm_depth(v)))
+                    except Exception as e:
+                        # 不合规的形状/类型直接跳过（也可改成 raise 强制失败）
+                        print(f"[skip] {name}: {e}")
+        return out
+
+    items = _walk(observation)
+    if not items:
+        return 0
+
+    ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    count = 0
+    with open(txt_path, "a", encoding="utf-8") as f:
+        for key, arr in items:
+            # (H,W,1) → (H,W) 逐行写入
+            img2d = arr.reshape(Ht, Wt)
+
+            f.write(f"# BEGIN key={key} timestamp={ts} shape={Ht}x{Wt} dtype={arr.dtype.name}\n")
+            # 一行 640 个整数，以空格分隔；np.savetxt 会自动换行
+            np.savetxt(f, img2d, fmt="%d", delimiter=" ")
+            f.write(f"# END key={key}\n")
+            count += 1
+    return count
