@@ -182,3 +182,6 @@ class Robot(abc.ABC):
     def disconnect(self) -> None:
         """Disconnect from the robot and perform any necessary cleanup."""
         pass
+
+    def disconnect_port(self):
+        return

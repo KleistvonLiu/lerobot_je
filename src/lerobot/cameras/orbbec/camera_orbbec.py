@@ -116,7 +116,6 @@ class OrbbecCamera(Camera):
         self.use_depth = config.use_depth
         self.index_or_path = config.index_or_path
         self.warmup_s = config.warmup_s
-        self.depth_height = None
         self.camera_pipeline = None
         self.is_connected_used = False
         self.thread: Thread | None = None
@@ -124,10 +123,8 @@ class OrbbecCamera(Camera):
         self.frame_lock: Lock = Lock()
         self.latest_frame: np.ndarray | None = None
         self.new_frame_event: Event = Event()
-        self.color_image = None
-        self.depth_map = None
-        self.logs = {}
-        self.temporal_filter = TemporalFilter(config.TemporalFilter_alpha)
+        # self.logs = {}
+        # self.temporal_filter = TemporalFilter(config.TemporalFilter_alpha)
         self.device = config.device_list.get_device_by_serial_number(self.index_or_path)
 
     @property
@@ -274,40 +271,51 @@ class OrbbecCamera(Camera):
             raise DeviceNotConnectedError(f"{self.index_or_path} is not connected.")
 
         start_time = time.perf_counter()
-        frames = self.camera_pipeline.wait_for_frames(100)
+        try:
+            frames = self.camera_pipeline.wait_for_frames(100)
+        except Exception as e:
+            logging.warning("wait_for_frames error: %s", e);
+            return None
         if frames is None:
             logging.warning(f"{self.index_or_path} No frames received")
             return None
 
         # 获取彩色帧与（可选）深度帧
-        color_frame = frames.get_color_frame()
-        depth_frame = frames.get_depth_frame() if self.use_depth else None
+        try:
+            color_frame = frames.get_color_frame()
+            depth_frame = frames.get_depth_frame() if self.use_depth else None
+        except Exception as e:
+            logging.warning("get_*_frame error: %s", e);
+            return None
 
         if not color_frame or (self.use_depth and (not depth_frame)):
             # logging.error(f"Camera {self.index_or_path} receives no frames, color:{not not color_frame}, depth:{not not depth_frame}")
             return None
         # logging.error(f"Camera {self.index_or_path} receives all frames, color:{not not color_frame}, depth:{not not depth_frame}")
 
-        # 转成 numpy 彩色图
-        color_image = frame_to_rgb_image(color_frame)
-        if color_image is None:
-            logging.info("failed to convert color frame to image")
-            return None
-
-        result: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]] = color_image
-
-        # 仅在启用深度时才做后处理与返回
-        if self.use_depth:
-            depth_map = self._post_process_depth_frame_v2(depth_frame)  # 期望返回 np.ndarray
-            if depth_map is None:
-                logging.info("failed to post-process depth frame")
+        try:
+            # 转成 numpy 彩色图
+            color_image = frame_to_rgb_image(color_frame)
+            if color_image is None:
+                logging.info("failed to convert color frame to image")
                 return None
-            result = (color_image, depth_map)
+
+            # 仅在启用深度时才做后处理与返回
+            if self.use_depth:
+                depth_map = self._post_process_depth_frame_v2(depth_frame)  # 期望返回 np.ndarray
+                if depth_map is None:
+                    logging.info("failed to post-process depth frame")
+                    return None
+                result: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]] = (color_image, depth_map)
+            else:
+                result: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]] = color_image
+
+        except Exception as e:
+            logging.warning("post_process_depth_frame error: %s", e)
 
         # 同步原有日志与成员
-        self.color_image = color_image
-        self.logs["delta_timestamp_s"] = time.perf_counter() - start_time
-        self.logs["timestamp_utc"] = capture_timestamp_utc()
+        # self.logs["delta_timestamp_s"] = time.perf_counter() - start_time
+        # self.logs["timestamp_utc"] = capture_timestamp_utc()
 
         return result
 
@@ -320,25 +328,25 @@ class OrbbecCamera(Camera):
         """
         while not self.stop_event.is_set():
             # try:
-                result = self.read()  # None | np.ndarray | (np.ndarray, np.ndarray)
-                if result is None:
-                    time.sleep(0.001)
-                    continue
+            result = self.read()  # None | np.ndarray | (np.ndarray, np.ndarray)
+            if result is None:
+                time.sleep(0.001)
+                continue
 
-                with self.frame_lock:
-                    # 你要求的字段
-                    self.latest_frame = result
-                    # self.latest_color_frame = color_image
-                    # self.latest_depth_frame = depth_map  # 可能是 None
+            with self.frame_lock:
+                # 你要求的字段
+                self.latest_frame = result
+                # self.latest_color_frame = color_image
+                # self.latest_depth_frame = depth_map  # 可能是 None
                 self.new_frame_event.set()
 
-            # except DeviceNotConnectedError:
-            #     break
-            # except Exception:
-            #     # 使用 exc_info=True 会自动附加异常信息和堆栈跟踪
-            #     camera_id = self.index_or_path if self.index_or_path is not None else "Unknown"
-            #     logging.error(f"Unhandled exception in background thread for camera {camera_id}", exc_info=True)
-            #     # logging.error(f"Error reading frame in background thread for: {e}")
+        # except DeviceNotConnectedError:
+        #     break
+        # except Exception:
+        #     # 使用 exc_info=True 会自动附加异常信息和堆栈跟踪
+        #     camera_id = self.index_or_path if self.index_or_path is not None else "Unknown"
+        #     logging.error(f"Unhandled exception in background thread for camera {camera_id}", exc_info=True)
+        #     # logging.error(f"Error reading frame in background thread for: {e}")
 
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""
