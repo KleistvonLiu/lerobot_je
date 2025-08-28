@@ -82,7 +82,7 @@ from lerobot.utils.utils import (
 from lerobot.utils.visualization_utils import _init_rerun
 from lerobot.configs import parser
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.utils.utils import append_depth_arrays_to_txt
+from lerobot.utils.utils import append_depth_arrays_to_txt, append_depth_arrays_to_txt_v2
 
 from lerobot.teleoperators import koch_leader, so100_leader, so101_leader, aloha_agilex_leader  # noqa: F401
 
@@ -191,9 +191,10 @@ def record_loop(
         # if count % 10 == 0:
         #     print(f"get observation count:{count}")  # 打印消息
         # count += 1
-        #######
-        append_depth_arrays_to_txt(observation1, "./raw_depth_data.txt")
-        #######
+        ###############################################################
+        # append_depth_arrays_to_txt(observation1, "./raw_depth_data.txt")
+        # append_depth_arrays_to_txt_v2(observation1, dataset.root+"/lerobot/raw_depth_data.txt")
+        ###############################################################
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
 

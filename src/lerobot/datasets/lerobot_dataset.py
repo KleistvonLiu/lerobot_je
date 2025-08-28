@@ -75,7 +75,7 @@ from lerobot.datasets.video_utils import (
     encode_video_frames,
     encode_video_frames_fast,
     get_safe_default_codec,
-    get_video_info, encode_video_frames_depth_image,
+    get_video_info, encode_video_frames_depth_image, encode_video_frames_depth_image_v2,
 )
 
 CODEBASE_VERSION = "v2.1"
@@ -984,11 +984,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
             img_dir = self._get_image_file_path(
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
-            # if "depth" in str(img_dir).casefold():
-            #     encode_video_frames_depth_image(img_dir, video_path, self.fps, overwrite=True, depth_image=True)
-            # else:
-            #     encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            if "depth" in str(img_dir).casefold():
+                encode_video_frames_depth_image_v2(img_dir, video_path, self.fps, overwrite=True, is_depth_image=True)
+            else:
+                encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            # encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
         return video_paths
 
     def batch_encode_videos(self, start_episode: int = 0, end_episode: int | None = None) -> None:

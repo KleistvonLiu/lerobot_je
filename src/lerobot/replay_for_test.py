@@ -50,7 +50,7 @@ from lerobot.robots import (  # noqa: F401
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import (
     init_logging,
-    log_say,
+    log_say, write_packed_depth_chw_to_txt,
 )
 
 
@@ -268,15 +268,18 @@ def replay(cfg: ReplayConfig):
             elif hasattr(depth, "numpy"):
                 depth = depth.numpy()
 
-            # try:
-            depth_hw1 = _normalize_depth(depth, target_hw=(480, 640))   # 若你的真实分辨率不同请改这里
-            # except Exception as e:
-            #     logging.warning("Normalize depth failed at idx=%d, %s: %r", idx, cam, e)
-            #     continue
-
-            # 追加写入文本块；把样本索引也写进 key 里更易追踪
-            block_key = f"idx={idx}.{key_path}"
-            _append_depth_block(out_txt, block_key, depth_hw1)
+            write_packed_depth_chw_to_txt(depth, out_txt)
+            # print(depth.shape)
+            # exit(1)
+            # # try:
+            # depth_hw1 = _normalize_depth(depth, target_hw=(480, 640))   # 若你的真实分辨率不同请改这里
+            # # except Exception as e:
+            # #     logging.warning("Normalize depth failed at idx=%d, %s: %r", idx, cam, e)
+            # #     continue
+            #
+            # # 追加写入文本块；把样本索引也写进 key 里更易追踪
+            # block_key = f"idx={idx}.{key_path}"
+            # _append_depth_block(out_txt, block_key, depth_hw1)
 
 if __name__ == "__main__":
     replay()

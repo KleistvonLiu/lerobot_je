@@ -254,6 +254,49 @@ class OrbbecCamera(Camera):
 
         return depth_u16
 
+    def _post_process_depth_frame_v2(self,
+                                     depth_frame,
+                                     *,
+                                     pack_to_rgb_u8: bool = True,
+                                     order: str = "HI_LO",  # "HI_LO": R=高8位, G=低8位；"LO_HI": R=低8位, G=高8位
+                                     b_fill: int = 0):  # 第三通道填充值(0~255)，仅为占位/标记
+        """
+        读取深度帧为 uint16，并可选打包为 (H,W,3) 的 RGB uint8：
+          - pack_to_rgb_u8=True  -> 返回 (H,W,3) uint8, 其中两通道存放 uint16 的高/低8位，可逆
+          - pack_to_rgb_u8=False -> 返回 (H,W,1) uint16（原样）
+        """
+        if not depth_frame:
+            logging.error("No depth frame received")
+            return None
+
+        h, w = depth_frame.get_height(), depth_frame.get_width()
+
+        # 原始字节 -> uint16 深度图（单位通常为毫米）
+        buf = depth_frame.get_data()
+        depth_u16 = np.frombuffer(buf, dtype=np.uint16, count=h * w).reshape(h, w).copy()
+        assert depth_u16.flags['C_CONTIGUOUS'], "depth_u16 should be C-contiguous after copy()"
+
+        if not pack_to_rgb_u8:
+            return depth_u16[..., None]  # (H,W,1) uint16
+
+        # 显式位运算(端序无关)拆分高/低8位
+        hi = ((depth_u16 >> 8) & 0xFF).astype(np.uint8)
+        lo = (depth_u16 & 0xFF).astype(np.uint8)
+
+        if order.upper() == "HI_LO":
+            r, g = hi, lo
+        elif order.upper() == "LO_HI":
+            r, g = lo, hi
+        else:
+            raise ValueError("order must be 'HI_LO' or 'LO_HI'")
+
+        # 第三通道占位（可做校验/标记：0 或 255 或 r^g 等）
+        b = np.full_like(r, np.uint8(b_fill))
+
+        depth_rgb_u8 = np.stack((r, g, b), axis=-1)  # (H,W,3) uint8
+        assert depth_rgb_u8.flags['C_CONTIGUOUS']
+        return depth_rgb_u8
+
     def read(self, color_mode: ColorMode | None = None) -> Optional[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]:
         """
         Returns:
@@ -267,7 +310,7 @@ class OrbbecCamera(Camera):
         start_time = time.perf_counter()
         frames = self.camera_pipeline.wait_for_frames(100)
         if frames is None:
-            logging.warning("No frames received")
+            logging.warning(f"{self.index_or_path} No frames received")
             return None
 
         # 获取彩色帧与（可选）深度帧
@@ -289,7 +332,7 @@ class OrbbecCamera(Camera):
 
         # 仅在启用深度时才做后处理与返回
         if self.use_depth:
-            depth_map = self._post_process_depth_frame(depth_frame)  # 期望返回 np.ndarray
+            depth_map = self._post_process_depth_frame_v2(depth_frame)  # 期望返回 np.ndarray
             if depth_map is None:
                 logging.info("failed to post-process depth frame")
                 return None

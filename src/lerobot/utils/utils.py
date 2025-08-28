@@ -495,3 +495,199 @@ def append_depth_arrays_to_txt(
             f.write(f"# END key={key}\n")
             count += 1
     return count
+
+def append_depth_arrays_to_txt_v2(
+    observation: Dict[Any, Any],
+    txt_path: Union[str, Path],
+    target_shape=(480, 640, 3),   # H, W, C；C 可以是 1/2/3，这里常见为 3（R=高8位, G=低8位, B占位）
+    dtype=np.uint16,
+    *,
+    packed_order: str = "HI_LO",  # "HI_LO": R=高8位,G=低8位；"LO_HI": R=低8位,G=高8位
+) -> int:
+    """
+    遍历 observation（可嵌套 dict），凡 key 含 'depth' 且 value 是 np.ndarray：
+      - 接受 (H,W)、(H,W,1)、(H,W,2)、(H,W,3) 或 channels-first 变体；
+      - 若为打包的 uint8 两/三通道，按 packed_order 还原为 uint16；
+      - 最终统一为 (Ht,Wt) 的 uint16，并以文本形式 **追加**写入 txt_path。
+
+    文本格式（示例）：
+      # BEGIN key=nested.left_depth timestamp=2025-08-26T08:12:34.567Z shape=480x640 dtype=uint16
+      0 0 1 1 2 ...  (共 480 行，每行 640 个整数)
+      ...
+      # END key=nested.left_depth
+
+    返回：本次写入的数组块数量
+    """
+    Ht, Wt, _ = target_shape
+    txt_path = Path(txt_path)
+
+    def _to_uint16_2d(arr: np.ndarray) -> np.ndarray:
+        """
+        把各种形状/类型的深度数组规范成 (Ht, Wt) 的 uint16。
+        支持： (H,W), (H,W,1), (H,W,2), (H,W,3), 以及 (C,H,W) 变体；也兼容 (Wt,Ht,*) 转置情形。
+        """
+        a = np.asarray(arr)
+
+        # channels-first -> channels-last
+        if a.ndim == 3 and a.shape[0] in (1, 2, 3):
+            a = np.transpose(a, (1, 2, 0))  # (H,W,C)
+
+        # 若宽高对调，转置回来
+        if a.ndim == 2 and a.shape == (Wt, Ht):
+            a = a.T
+        elif a.ndim == 3 and a.shape[0:2] == (Wt, Ht):
+            a = np.transpose(a, (1, 0, 2))
+
+        # 现在期望 (Ht,Wt) 或 (Ht,Wt,C)
+        if a.ndim == 2:
+            u16 = a.astype(np.uint16, copy=False)
+            if u16.shape != (Ht, Wt):
+                raise ValueError(f"意外形状: {a.shape}，期望 {(Ht, Wt)}")
+            return np.ascontiguousarray(u16, dtype=np.uint16)
+
+        if a.ndim == 3:
+            h, w, c = a.shape
+            if (h, w) != (Ht, Wt):
+                raise ValueError(f"意外形状: {a.shape}，期望 {(Ht, Wt, 'C')}")
+            if c == 1:
+                u16 = a[..., 0].astype(np.uint16, copy=False)
+                return np.ascontiguousarray(u16, dtype=np.uint16)
+            if c in (2, 3):
+                if a.dtype != np.uint8:
+                    raise ValueError(f"打包的深度应为 uint8 通道，当前 dtype={a.dtype}")
+                if packed_order.upper() == "HI_LO":
+                    hi = a[..., 0].astype(np.uint16)
+                    lo = a[..., 1].astype(np.uint16)
+                elif packed_order.upper() == "LO_HI":
+                    lo = a[..., 0].astype(np.uint16)
+                    hi = a[..., 1].astype(np.uint16)
+                else:
+                    raise ValueError("packed_order 必须为 'HI_LO' 或 'LO_HI'")
+                u16 = (hi << 8) | lo
+                return np.ascontiguousarray(u16, dtype=np.uint16)
+            raise ValueError(f"不支持的通道数 C={c}（仅支持 1/2/3）")
+
+        raise ValueError(f"不支持的深度维度: {a.shape}")
+
+    def _walk(d: Dict[Any, Any], prefix: str = "") -> list[tuple[str, np.ndarray]]:
+        out = []
+        for k, v in d.items():
+            name = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, dict):
+                out.extend(_walk(v, name))
+            else:
+                if "depth" in str(k).lower() and isinstance(v, np.ndarray):
+                    try:
+                        u16_2d = _to_uint16_2d(v)
+                        out.append((name, u16_2d))
+                    except Exception as e:
+                        print(f"[skip] {name}: {e}")
+        return out
+
+    items = _walk(observation)
+    if not items:
+        return 0
+
+    ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    count = 0
+    with open(txt_path, "a", encoding="utf-8") as f:
+        for key, u16_2d in items:
+            assert u16_2d.dtype == np.uint16 and u16_2d.shape == (Ht, Wt)
+            f.write(f"# BEGIN key={key} timestamp={ts} shape={Ht}x{Wt} dtype={dtype.__name__}\n")
+            # 一行 640 个整数，以空格分隔
+            np.savetxt(f, u16_2d, fmt="%d", delimiter=" ")
+            f.write(f"# END key={key}\n")
+            count += 1
+    return count
+
+def write_packed_depth_chw_to_txt(
+    packed: np.ndarray,
+    txt_path: Union[str, Path],
+    *,
+    order: str = "HI_LO",     # "HI_LO": 通道hi_idx=高8位, lo_idx=低8位；"LO_HI": 相反
+    hi_idx: int = 0,
+    lo_idx: int = 1,
+    header_tag: str = "depth",
+    append: bool = True,
+    float_as_uint8_mode: str = "auto",  # "auto" | "0_1" | "0_255"
+) -> None:
+    """
+    接收 (C,H,W) 的打包深度（uint8 或 float32），把两通道还原为 uint16 深度并写入 txt。
+    - float32 时按 float_as_uint8_mode 转换为 uint8：
+        auto : 值域<=1 -> *255；否则直接视作 0..255
+        0_1  : 一律按 *255
+        0_255: 一律按 0..255
+    - order 控制通道含义；默认 HI_LO：hi_idx=高8位，lo_idx=低8位
+    """
+    if not isinstance(packed, np.ndarray):
+        raise TypeError("packed 必须是 numpy.ndarray")
+    if packed.ndim != 3:
+        raise ValueError(f"期望 (C,H,W)，当前形状 {packed.shape}")
+
+    C, H, W = packed.shape
+    if C not in (2, 3):
+        raise ValueError(f"通道数必须为 2 或 3，当前 C={C}")
+
+    # --- 将任意 dtype 安全转为 uint8 ---
+    a = _to_uint8(packed, mode=float_as_uint8_mode)
+
+    # --- 选取高/低位通道并还原为 uint16 ---
+    order = order.upper()
+    if order == "HI_LO":
+        hi = a[hi_idx].astype(np.uint16)
+        lo = a[lo_idx].astype(np.uint16)
+    elif order == "LO_HI":
+        lo = a[hi_idx].astype(np.uint16)  # 注意：参数名保持不变，但语义交换
+        hi = a[lo_idx].astype(np.uint16)
+    else:
+        raise ValueError("order 只能为 'HI_LO' 或 'LO_HI'")
+
+    if hi.shape != (H, W) or lo.shape != (H, W):
+        raise ValueError("高/低位通道的形状异常")
+
+    depth_u16 = np.ascontiguousarray((hi << 8) | lo, dtype=np.uint16)
+
+    # --- 写入 txt ---
+    txt_path = Path(txt_path)
+    mode = "a" if append else "w"
+    ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    with open(txt_path, mode, encoding="utf-8") as f:
+        f.write(f"# BEGIN key={header_tag} timestamp={ts} shape={H}x{W} dtype=uint16 order={order}\n")
+        np.savetxt(f, depth_u16, fmt="%d", delimiter=" ")
+        f.write(f"# END key={header_tag}\n")
+
+
+def _to_uint8(x: np.ndarray, mode: str = "auto") -> np.ndarray:
+    """
+    将任意 dtype 的 (C,H,W) 转为 uint8：
+    - 浮点: 处理 NaN/Inf -> (0/255/0)，四舍五入并裁剪到 [0,255]
+    - 整型: 裁剪到 [0,255]
+    """
+    a = np.asarray(x)
+    if a.dtype == np.uint8:
+        return a
+
+    if np.issubdtype(a.dtype, np.floating):
+        y = np.nan_to_num(a, nan=0.0, posinf=255.0, neginf=0.0)
+        m = mode.lower()
+        if m == "0_1":
+            y = np.rint(y * 255.0)
+        elif m == "0_255":
+            y = np.rint(y)
+        elif m == "auto":
+            # 宽松判断：只要最大值不超过 1.0+1e-3，按 0..1 处理
+            maxv = float(np.nanmax(y))
+            if maxv <= 1.0 + 1e-3:
+                y = np.rint(y * 255.0)
+            else:
+                y = np.rint(y)
+        else:
+            raise ValueError("float_as_uint8_mode 必须为 'auto' | '0_1' | '0_255'")
+        y = np.clip(y, 0, 255).astype(np.uint8)
+        return y
+
+    if np.issubdtype(a.dtype, np.integer):
+        return np.clip(a, 0, 255).astype(np.uint8)
+
+    # 其它类型做保守处理
+    return np.clip(a.astype(np.float32), 0, 255).astype(np.uint8)

@@ -19,7 +19,7 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Union
 import subprocess
 
 import os
@@ -526,6 +526,155 @@ def encode_video_frames_fast(
     cmd.append(str(video_path))
     subprocess.run(cmd, check=True)
 
+def encode_video_frames_depth_image_v2(
+    imgs_dir: Union[Path, str],
+    video_path: Union[Path, str],
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    log_level: int | None = av.logging.ERROR,
+    overwrite: bool = False,
+    is_depth_image: bool = False,   # 深度图3通道→MP4（无损）开关
+) -> None:
+    """
+    读取 imgs_dir 下按 frame_000000.png 命名的 3通道图像并编码为视频。
+    - is_depth_image=False：按 vcodec/pix_fmt（默认 libsvtav1 + yuv420p）写 MP4（有损/可视化）
+    - is_depth_image=True ：强制 libx264rgb + rgb24 + crf=0 无损写 MP4（适合 3通道打包深度）
+    """
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
+    video_path.parent.mkdir(parents=True, exist_ok=overwrite)
+
+    # 统一输出为 mp4
+    if video_path.suffix.lower() != ".mp4":
+        logging.warning(f"Output will be MP4; changing suffix to .mp4: {video_path}")
+        video_path = video_path.with_suffix(".mp4")
+
+    # 收集帧
+    template = "frame_" + ("[0-9]" * 6) + ".png"
+    input_list = sorted(
+        glob.glob(str(imgs_dir / template)),
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),
+    )
+    if not input_list:
+        raise FileNotFoundError(f"No images found in {imgs_dir} matching {template}.")
+
+    # 读首帧确定尺寸
+    first_img = Image.open(input_list[0]).convert("RGB")  # 只考虑3通道
+    width, height = first_img.size
+
+    # yuv420p 需要偶数分辨率（仅普通模式需要）
+    def _maybe_pad_rgb(im: Image.Image) -> Image.Image:
+        if pix_fmt != "yuv420p":
+            return im
+        w, h = im.size
+        if (w % 2 == 0) and (h % 2 == 0):
+            return im
+        new_w = w + (w % 2)
+        new_h = h + (h % 2)
+        pad = Image.new("RGB", (new_w, new_h), (0, 0, 0))
+        pad.paste(im, (0, 0))
+        return pad
+
+    # 设置 PyAV 日志
+    if log_level is not None:
+        logging.getLogger("libav").setLevel(log_level)
+
+    # ---------------- 深度三通道 → MP4（无损） ----------------
+    if is_depth_image:
+        # 强制使用 libx264rgb + rgb24 + crf=0（无损，且不做色度下采样/颜色空间转换）
+        with av.open(str(video_path), "w") as output:
+            stream = output.add_stream("libx264rgb", rate=fps, options={"crf": "0", "preset": "veryslow"})
+            stream.pix_fmt = "rgb24"
+            stream.width = width
+            stream.height = height
+
+            # 首帧
+            arr = np.array(first_img, dtype=np.uint8)  # (H,W,3) uint8
+            frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+            pkt = stream.encode(frame)
+            if pkt:
+                output.mux(pkt)
+
+            # 余下帧
+            for p in input_list[1:]:
+                img = Image.open(p).convert("RGB")
+                arr = np.array(img, dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+                pkt = stream.encode(frame)
+                if pkt:
+                    output.mux(pkt)
+
+            # flush
+            pkt = stream.encode(None)
+            if pkt:
+                output.mux(pkt)
+
+        if log_level is not None:
+            av.logging.restore_default_callback()
+        if not video_path.exists():
+            raise OSError(f"Video encoding failed (depth, mp4): {video_path} not found.")
+        return
+
+    # ---------------- 普通三通道 → MP4（可视化） ----------------
+    if vcodec not in ["h264", "hevc", "libsvtav1"]:
+        raise ValueError(f"Unsupported video codec: {vcodec}. Supported: h264, hevc, libsvtav1.")
+
+    # 兼容性提示
+    if (vcodec in ("libsvtav1", "hevc")) and pix_fmt == "yuv444p":
+        logging.warning(
+            f"Incompatible pixel format 'yuv444p' for codec {vcodec}, auto-selecting 'yuv420p'"
+        )
+        pix_fmt = "yuv420p"
+
+    # 若 yuv420p 且首帧需要补齐
+    first_img = _maybe_pad_rgb(first_img)
+    width, height = first_img.size
+
+    video_options: dict[str, str] = {}
+    if g is not None:
+        video_options["g"] = str(g)
+    if crf is not None:
+        video_options["crf"] = str(crf)
+    if fast_decode:
+        key = "svtav1-params" if vcodec == "libsvtav1" else "tune"
+        value = f"fast-decode={fast_decode}" if vcodec == "libsvtav1" else "fastdecode"
+        video_options[key] = value
+
+    with av.open(str(video_path), "w") as output:
+        stream = output.add_stream(vcodec, fps, options=video_options)
+        stream.pix_fmt = pix_fmt
+        stream.width = width
+        stream.height = height
+
+        # 首帧
+        frame = av.VideoFrame.from_image(first_img)
+        pkt = stream.encode(frame)
+        if pkt:
+            output.mux(pkt)
+
+        # 余下帧
+        for p in input_list[1:]:
+            img = Image.open(p).convert("RGB")
+            img = _maybe_pad_rgb(img)
+            frame = av.VideoFrame.from_image(img)
+            pkt = stream.encode(frame)
+            if pkt:
+                output.mux(pkt)
+
+        # flush
+        pkt = stream.encode(None)
+        if pkt:
+            output.mux(pkt)
+
+    if log_level is not None:
+        av.logging.restore_default_callback()
+    if not video_path.exists():
+        raise OSError(f"Video encoding failed: {video_path} not found.")
+
 @dataclass
 class VideoFrame:
     # TODO(rcadene, lhoestq): move to Hugging Face `datasets` repo
@@ -630,10 +779,10 @@ def get_video_pixel_channels(pix_fmt: str) -> int:
         return 1
     elif "rgba" in pix_fmt or "yuva" in pix_fmt:
         return 4
-    elif "rgb" in pix_fmt or "yuv" in pix_fmt:
+    elif "rgb" in pix_fmt or "yuv" in pix_fmt or "gbrp" in pix_fmt:
         return 3
     else:
-        raise ValueError("Unknown format")
+        raise ValueError("Unknown format: {}".format(pix_fmt))
 
 
 def get_image_pixel_channels(image: Image):
@@ -646,4 +795,4 @@ def get_image_pixel_channels(image: Image):
     elif image.mode == "RGBA":
         return 4  # RGBA
     else:
-        raise ValueError("Unknown format")
+        raise ValueError("Unknown format: {}".format(image.mode))

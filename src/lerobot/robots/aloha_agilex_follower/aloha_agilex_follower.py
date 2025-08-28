@@ -67,7 +67,7 @@ class AlohaAgileXFollower(Robot):
         }
         depth = {
                 f"{cam}_depth": (self.config.cameras[cam].height,
-                                 self.config.cameras[cam].width, 1)
+                                 self.config.cameras[cam].width, 3)
                 for cam in self.cameras if self.cameras[cam].use_depth
             }
         return {**base, **depth}
