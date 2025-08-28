@@ -116,7 +116,6 @@ class OrbbecCamera(Camera):
         self.use_depth = config.use_depth
         self.index_or_path = config.index_or_path
         self.warmup_s = config.warmup_s
-        self.Hi_resolution_mode = config.Hi_resolution_mode
         self.depth_height = None
         self.camera_pipeline = None
         self.is_connected_used = False
@@ -207,39 +206,6 @@ class OrbbecCamera(Camera):
                 self.read()
                 time.sleep(0.1)
         logging.info(f"Camera {self.index_or_path} connected!")
-
-    def HandleDepth(self, depth_frame):
-        if depth_frame is None:
-            logging.info("No depth frame received")
-            return None
-
-        width = depth_frame.get_width()
-        height = depth_frame.get_height()
-        scale = depth_frame.get_depth_scale()
-
-        depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16)
-        depth_data = depth_data.reshape((height, width))
-
-        # Apply temporal filter
-        filtered_depth_data = self.temporal_filter.process(depth_data)
-        # Convert to float32 and apply scale
-        # filtered_depth_data = filtered_depth_data.astype(np.float32) * scale
-        filtered_depth_data = filtered_depth_data.astype(np.uint16)
-
-        # depth_mm = (filtered_depth_data * 1000).astype(np.uint32)
-        if self.Hi_resolution_mode:
-            R = ((filtered_depth_data >> 8) & 0xFF).astype(np.uint8)
-            G = (filtered_depth_data & 0xFF).astype(np.uint8)
-            B = np.zeros_like(R, dtype=np.uint8)
-
-            filtered_depth_data = cv2.merge([B, G, R])
-
-        else:
-            filtered_depth_data = cv2.normalize(
-                filtered_depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
-            )
-            filtered_depth_data = cv2.applyColorMap(filtered_depth_data, cv2.COLORMAP_JET)
-        return filtered_depth_data
 
     def _post_process_depth_frame(self, depth_frame):
         if not depth_frame:
@@ -462,24 +428,3 @@ class OrbbecCamera(Camera):
             self.thread = Thread(target=self.test_loop, args=())
             self.thread.daemon = True
             self.thread.start()
-
-# if __name__ == "__main__":
-#     # Create a configuration for the OrbbecCamera
-#     config = OrbbecCameraConfig(
-#         fps=30,
-#         width=640,
-#         height=480,
-#         color_mode="bgr",
-#         use_depth=False,
-#         index_or_path=0,
-#     )
-#
-#     # Initialize the camera
-#     camera = OrbbecCamera(config)
-#     # Connect to the camera
-#     camera.connect()
-#     time.sleep(10)
-#
-#     # Start asynchronous reading
-#     while True:
-#         camera.async_read()

@@ -19,18 +19,11 @@ from ..configs import CameraConfig
 @CameraConfig.register_subclass("orbbec")
 @dataclass
 class OrbbecCameraConfig(CameraConfig):
-    # fps: int | None = None
-    # width: int | None = None
-    # height: int | None = None
-    # use_depth: bool = False
     color_mode: str = "rgb"
-    mock: bool = False
     index_or_path: str = None
     channels: int = 3
     TemporalFilter_alpha: float = 0.5
-    Hi_resolution_mode: bool = False
     warmup_s: int = 1
-    # device_list: pyorbbecsdk.DeviceList = None
 
     def __post_init__(self):
         # bool is stronger than is None, since it works with empty strings
