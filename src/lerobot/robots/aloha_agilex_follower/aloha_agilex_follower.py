@@ -141,12 +141,9 @@ class AlohaAgileXFollower(Robot):
             camera_frame = cam.async_read()
             if isinstance(camera_frame, tuple):
                 color_image, depth_map = camera_frame
-                color_image = np.transpose(color_image, (2, 0, 1))
-                depth_map = np.transpose(depth_map, (2, 0, 1))
                 obs_dict[cam_key] = color_image
                 obs_dict[cam_key + "_depth"] = depth_map
             else:
-                camera_frame = np.transpose(camera_frame, (2, 0, 1))
                 obs_dict[cam_key] = camera_frame
             # dt_ms = (time.perf_counter() - start) * 1e3
             # logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
