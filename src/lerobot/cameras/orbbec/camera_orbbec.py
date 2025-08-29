@@ -182,6 +182,85 @@ class OrbbecCamera(Camera):
             return None
         return None
 
+    def _get_stream_config_v2(self, pipeline: ob.Pipeline):
+        """
+        以软件对齐（SW_MODE）方式开启 640x480 的彩色与深度流。
+        不使用 get_d2c_depth_profile_list(...)，避免触发硬件 D2C 管线。
+        """
+        cfg = ob.Config()
+        want_w, want_h, want_fps = int(self.width), int(self.height), int(self.fps)
+
+        try:
+            # ---------- 选择 COLOR (RGB) 640x480 ----------
+            color_list = pipeline.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR)
+            color_profile = None
+
+            # 先找分辨率+fps 都匹配的
+            for i in range(len(color_list)):
+                p = color_list[i]
+                if (p.get_format() == ob.OBFormat.RGB and
+                        p.get_width() == want_w and p.get_height() == want_h and
+                        int(round(p.get_fps())) == want_fps):
+                    color_profile = p
+                    break
+
+            # 次选：分辨率匹配，fps 任意
+            if color_profile is None:
+                for i in range(len(color_list)):
+                    p = color_list[i]
+                    if (p.get_format() == ob.OBFormat.RGB and
+                            p.get_width() == want_w and p.get_height() == want_h):
+                        color_profile = p
+                        break
+
+            if color_profile is None:
+                logging.error("No RGB COLOR profile %dx%d found (want fps=%d)", want_w, want_h, want_fps)
+                return None
+
+            # ---------- 选择 DEPTH 640x480 ----------
+            depth_list = pipeline.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR)
+            depth_profile = None
+
+            # 先找分辨率+fps 都匹配的
+            for i in range(len(depth_list)):
+                dp = depth_list[i]
+                if (dp.get_width() == want_w and dp.get_height() == want_h and
+                        int(round(dp.get_fps())) == want_fps):
+                    depth_profile = dp
+                    break
+
+            # 次选：分辨率匹配，fps 任意
+            if depth_profile is None:
+                for i in range(len(depth_list)):
+                    dp = depth_list[i]
+                    if dp.get_width() == want_w and dp.get_height() == want_h:
+                        depth_profile = dp
+                        break
+
+            if depth_profile is None:
+                logging.error("No DEPTH profile %dx%d found (want fps=%d)", want_w, want_h, want_fps)
+                return None
+
+            # ---------- 启动两路流（不走硬件 D2C 对齐） ----------
+            cfg.enable_stream(color_profile)
+            cfg.enable_stream(depth_profile)
+
+            # 使用软件对齐（如需关闭对齐，直接注释掉下一行）
+            cfg.set_align_mode(ob.OBAlignMode.SW_MODE)
+
+            # 保存引用，防止 Python GC 提前释放导致底层悬挂指针
+            self._bound_profiles = (color_profile, depth_profile)
+
+            logging.info(
+                f"Selected COLOR {color_profile.get_width()}x{color_profile.get_height()}@{int(round(color_profile.get_fps()))}fps (RGB), "
+                f"DEPTH {depth_profile.get_width()}x{depth_profile.get_height()}@{int(round(depth_profile.get_fps()))}fps (SW align)")
+
+            return cfg
+
+        except Exception:
+            logging.exception("prepare stream config (SW align) failed")
+            return None
+
     def connect(self, warmup: bool = True):
         if self.is_connected_used:
             raise DeviceAlreadyConnectedError("OrbbecCamera is readyConnected")
@@ -190,7 +269,7 @@ class OrbbecCamera(Camera):
 
         self.camera_pipeline = ob.Pipeline(self.device)
 
-        ob_config = self._get_stream_config(self.camera_pipeline)
+        ob_config = self._get_stream_config_v2(self.camera_pipeline)
         if ob_config is None:
             logging.error("Camera connection failed")
             return

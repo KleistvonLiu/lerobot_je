@@ -14,13 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import contextlib
+import glob
 import logging
 import os
 import shutil
 import time
 from pathlib import Path
 from typing import Callable
-from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_EXCEPTION
 
 import av.logging
 import datasets
@@ -75,7 +77,8 @@ from lerobot.datasets.video_utils import (
     encode_video_frames,
     encode_video_frames_fast,
     get_safe_default_codec,
-    get_video_info, encode_video_frames_depth_image, encode_video_frames_depth_image_v2,
+    get_video_info,
+    encode_video_frames_depth_image_v4,
 )
 
 CODEBASE_VERSION = "v2.1"
@@ -985,7 +988,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
             if "depth" in str(img_dir).casefold():
-                encode_video_frames_depth_image_v2(img_dir, video_path, self.fps, overwrite=True, is_depth_image=True)
+                encode_video_frames_depth_image_v4(img_dir, video_path, self.fps, overwrite=True, is_depth_image=True)
             else:
                 encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
             # encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
@@ -1008,7 +1011,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         for ep_idx in range(start_episode, end_episode):
             logging.info(f"Encoding videos for episode {ep_idx}")
             # self.encode_episode_videos(ep_idx)
-            self.encode_episode_videos_parallel(ep_idx)
+            # self.encode_episode_videos_parallel(ep_idx)
+            self.encode_episode_videos_parallel_v2(ep_idx)
 
         # Update video info in metadata
         self.meta.update_video_info()
@@ -1039,6 +1043,60 @@ class LeRobotDataset(torch.utils.data.Dataset):
             # 等待任务完成（可选）
             for task in tasks:
                 task.result()
+        return video_paths
+
+    def encode_episode_videos_parallel_v2(self, episode_index: int) -> dict:
+        ENCODE_TIMEOUT_S = 1800  # 单个任务超时（按自己数据量调）
+
+        video_paths = {}
+        tasks = []
+
+        # 1) 用 spawn，避免 fork 导致的死锁
+        ctx = mp.get_context("spawn")
+
+        # 2) 限制外层并发，避免与编码器内部线程叠加
+        max_workers = max(1, min(4, (os.cpu_count() or 2) // 2))
+
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+            for key in self.meta.video_keys:
+                video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+                video_paths[key] = str(video_path)
+                if video_path.is_file():
+                    continue
+                img_dir = self._get_image_file_path(
+                    episode_index=episode_index, image_key=key, frame_index=0
+                ).parent
+
+                # 3) 明确传入内部线程限制参数（见下方 encode 函数）
+                fut = executor.submit(
+                    encode_video_frames_depth_image_v4,
+                    img_dir,
+                    video_path,
+                    self.fps,
+                    vcodec="libsvtav1",
+                    pix_fmt="yuv420p",
+                    g=2,
+                    crf=30,
+                    fast_decode=0,
+                    log_level=av.logging.ERROR,
+                    overwrite=True,
+                    codec_threads=1,  # 非 SVT 的 codec 用这个
+                    svt_lp=2  # SVT-AV1 用这个控制内部线程
+                )
+                tasks.append(fut)
+
+            # 4) 用 wait/as_completed + 超时，定位“卡住的那个”
+            done, not_done = wait(tasks, timeout=ENCODE_TIMEOUT_S, return_when=FIRST_EXCEPTION)
+            # 先处理已完成的（这里会把异常抛出来，便于定位）
+            for f in done:
+                f.result()
+
+            if not_done:
+                # 取消剩余任务并明确报错
+                for f in not_done:
+                    f.cancel()
+                raise TimeoutError(f"{len(not_done)} encoding task(s) timed out for episode {episode_index}")
+
         return video_paths
 
     @classmethod

@@ -675,6 +675,270 @@ def encode_video_frames_depth_image_v2(
     if not video_path.exists():
         raise OSError(f"Video encoding failed: {video_path} not found.")
 
+def _maybe_pad_even_rgb(im: Image.Image, need_even: bool) -> Image.Image:
+    if not need_even:
+        return im
+    w, h = im.size
+    if (w % 2 == 0) and (h % 2 == 0):
+        return im
+    new_w = w + (w % 2)
+    new_h = h + (h % 2)
+    pad = Image.new("RGB", (new_w, new_h), (0, 0, 0))
+    pad.paste(im, (0, 0))
+    return pad
+
+
+def _ndarray_rgb24_sane(arr: np.ndarray, target_wh_even: bool = False) -> np.ndarray:
+    """确保 HxWx3 uint8、C 连续；必要时裁偶数边；并返回独享拷贝以避免 PyAV/FFmpeg 触碰共享缓冲。"""
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8, copy=False)
+    if arr.ndim == 2:
+        arr = np.repeat(arr[:, :, None], 3, axis=2)
+    assert arr.ndim == 3 and arr.shape[2] == 3, "frame must be (H,W,3)"
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr)
+    if target_wh_even:
+        H, W = arr.shape[:2]
+        arr = arr[: H // 2 * 2, : W // 2 * 2, :]
+    # 关键：给编码器独享缓冲，避免只读/共享视图引发段错
+    return arr.copy()
+
+
+def _encode_and_mux(stream: av.video.stream.VideoStream, frame: av.VideoFrame, container: av.container.OutputContainer):
+    for pkt in stream.encode(frame):
+        container.mux(pkt)
+
+
+def _flush_and_mux(stream: av.video.stream.VideoStream, container: av.container.OutputContainer):
+    for pkt in stream.encode(None):
+        container.mux(pkt)
+
+
+def encode_video_frames_depth_image_v3(
+    imgs_dir: Union[Path, str],
+    video_path: Union[Path, str],
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    log_level: int | None = av.logging.ERROR,
+    overwrite: bool = False,
+    is_depth_image: bool = False,   # 深度图3通道→MP4（无损）开关
+) -> None:
+    """
+    读取 imgs_dir 下按 frame_000000.png 命名的 3通道图像并编码为视频。
+    - is_depth_image=False：按 vcodec/pix_fmt（默认 libsvtav1 + yuv420p）写 MP4（可视化）
+    - is_depth_image=True ：强制 libx264rgb + rgb24 + qp=0 无损写 MP4（适合 3通道打包深度）
+    """
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 统一输出为 mp4
+    if video_path.suffix.lower() != ".mp4":
+        logging.warning(f"Output will be MP4; changing suffix to .mp4: {video_path}")
+        video_path = video_path.with_suffix(".mp4")
+
+    # 收集帧
+    template = "frame_" + ("[0-9]" * 6) + ".png"
+    input_list = sorted(
+        glob.glob(str(imgs_dir / template)),
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),
+    )
+    if not input_list:
+        raise FileNotFoundError(f"No images found in {imgs_dir} matching {template}.")
+
+    # 设置 PyAV 日志
+    if log_level is not None:
+        av.logging.set_level(log_level)
+
+    # 读取首帧（仅用于尺寸/像素格式探测）
+    with Image.open(input_list[0]) as _im0:
+        first_img = _im0.convert("RGB")
+    width, height = first_img.size
+
+    # ---------------- 深度三通道 → MP4（无损 x264rgb） ----------------
+    if is_depth_image:
+        # mp4 + rgb24 在多数环境可用；若个别系统仍不稳，可改成 .mkv 容器更保险
+        with av.open(str(video_path), "w") as output:
+            stream = output.add_stream("libx264rgb", rate=fps)
+            stream.pix_fmt = "rgb24"
+            stream.width = width
+            stream.height = height
+            # 关键稳定项：无损 + 单线程 + 禁用切片线程
+            stream.options = {
+                "qp": "0",              # 真正无损
+                "threads": "1",
+                "sliced_threads": "0",
+                # "tune": "zerolatency",  # 可选
+            }
+
+            # 编码所有帧
+            # 首帧
+            arr0 = _ndarray_rgb24_sane(np.array(first_img, dtype=np.uint8))
+            frame0 = av.VideoFrame.from_ndarray(arr0, format="rgb24")
+            _encode_and_mux(stream, frame0, output)
+
+            # 余下帧
+            for p in input_list[1:]:
+                with Image.open(p) as _im:
+                    img = _im.convert("RGB")
+                arr = _ndarray_rgb24_sane(np.array(img, dtype=np.uint8))
+                frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
+                _encode_and_mux(stream, frame, output)
+
+            _flush_and_mux(stream, output)
+
+        if log_level is not None:
+            av.logging.set_level(av.logging.ERROR)
+        if not video_path.exists():
+            raise OSError(f"Video encoding failed (depth, mp4): {video_path} not found.")
+        return
+
+    # ---------------- 普通三通道 → MP4（可视化） ----------------
+    if vcodec not in ["h264", "hevc", "libsvtav1"]:
+        raise ValueError(f"Unsupported video codec: {vcodec}. Supported: h264, hevc, libsvtav1.")
+
+    # 兼容性：部分编码器不接受 yuv444p
+    if (vcodec in ("libsvtav1", "hevc")) and pix_fmt == "yuv444p":
+        logging.warning("Incompatible pixel format 'yuv444p' for codec %s, auto-selecting 'yuv420p'", vcodec)
+        pix_fmt = "yuv420p"
+
+    need_even = (pix_fmt == "yuv420p")
+    first_img = _maybe_pad_even_rgb(first_img, need_even)
+    width, height = first_img.size
+
+    video_options: dict[str, str] = {}
+    if g is not None:
+        video_options["g"] = str(g)
+    if crf is not None:
+        video_options["crf"] = str(crf)
+    if fast_decode:
+        if vcodec == "libsvtav1":
+            video_options["svtav1-params"] = f"fast-decode={fast_decode}"
+        else:
+            video_options["tune"] = "fastdecode"
+
+    with av.open(str(video_path), "w") as output:
+        stream = output.add_stream(vcodec, rate=fps, options=video_options)
+        stream.pix_fmt = pix_fmt
+        stream.width = width
+        stream.height = height
+
+        # 首帧
+        frame = av.VideoFrame.from_image(first_img)
+        _encode_and_mux(stream, frame, output)
+
+        # 余下帧
+        for p in input_list[1:]:
+            with Image.open(p) as _im:
+                img = _im.convert("RGB")
+            img = _maybe_pad_even_rgb(img, need_even)
+            frame = av.VideoFrame.from_image(img)
+            _encode_and_mux(stream, frame, output)
+
+        _flush_and_mux(stream, output)
+
+    if log_level is not None:
+        av.logging.set_level(av.logging.ERROR)
+    if not video_path.exists():
+        raise OSError(f"Video encoding failed: {video_path} not found.")
+
+
+def encode_video_frames_depth_image_v4(
+        imgs_dir: Path | str,
+        video_path: Path | str,
+        fps: int,
+        vcodec: str = "libsvtav1",
+        pix_fmt: str = "yuv420p",
+        g: int | None = 2,
+        crf: int | None = 30,
+        fast_decode: int = 0,
+        log_level: int | None = av.logging.ERROR,
+        overwrite: bool = False,
+        *,
+        codec_threads: int = 1,  # 新增：控制非 SVT 编码器内部线程
+        svt_lp: int = 2  # 新增：控制 SVT-AV1 的逻辑核数
+) -> None:
+    # ——把日志和资源的修改放在 try/finally，确保恢复——
+    _set_log = False
+    try:
+        if vcodec not in ["h264", "hevc", "libsvtav1"]:
+            raise ValueError(f"Unsupported video codec: {vcodec}. Supported: h264, hevc, libsvtav1.")
+
+        video_path = Path(video_path)
+        imgs_dir = Path(imgs_dir)
+        video_path.parent.mkdir(parents=True, exist_ok=True)  # 目录存在就行
+
+        if (vcodec in {"libsvtav1", "hevc"}) and pix_fmt == "yuv444p":
+            logging.warning(f"Incompatible pixel format 'yuv444p' for codec {vcodec}, auto-select 'yuv420p'")
+            pix_fmt = "yuv420p"
+
+        template = "frame_" + ("[0-9]" * 6) + ".png"
+        input_list = sorted(
+            glob.glob(str(imgs_dir / template)),
+            key=lambda x: int(x.split("_")[-1].split(".")[0])
+        )
+        if not input_list:
+            raise FileNotFoundError(f"No images found in {imgs_dir}.")
+
+        # 用 with 确保句柄关闭
+        with Image.open(input_list[0]) as dummy:
+            width, height = dummy.size
+
+        # 组装 codec 选项，限制内部线程
+        video_options = {}
+        if g is not None:
+            video_options["g"] = str(g)
+        if crf is not None:
+            video_options["crf"] = str(crf)
+
+        if vcodec == "libsvtav1":
+            svt_params = []
+            if fast_decode:
+                svt_params.append(f"fast-decode={fast_decode}")
+            if svt_lp and svt_lp > 0:
+                svt_params.append(f"lp={svt_lp}")  # 控制 SVT 的线程数
+            if svt_params:
+                video_options["svtav1-params"] = ":".join(svt_params)
+        else:
+            # FFmpeg 通用线程参数，适用于 x264/x265 等
+            video_options["threads"] = str(max(1, codec_threads))
+
+        if log_level is not None:
+            logging.getLogger("libav").setLevel(log_level)
+            _set_log = True
+
+        # 写文件（'w' 本身会覆盖）
+        with av.open(str(video_path), "w") as output:
+            stream = output.add_stream(vcodec, fps, options=video_options)
+            stream.pix_fmt = pix_fmt
+            stream.width = width
+            stream.height = height
+
+            for p in input_list:
+                # 逐个打开并立即关闭，避免堆积文件句柄
+                with Image.open(p) as im:
+                    im_rgb = im.convert("RGB")
+                frame = av.VideoFrame.from_image(im_rgb)
+
+                # PyAV 有时一帧可能产生 0/1/多 个 packet，用可迭代写法更稳
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+
+            # flush
+            for packet in stream.encode():
+                output.mux(packet)
+
+        if not video_path.exists():
+            raise OSError(f"Video encoding did not work. File not found: {video_path}.")
+
+    finally:
+        if _set_log:
+            av.logging.restore_default_callback()
+
 @dataclass
 class VideoFrame:
     # TODO(rcadene, lhoestq): move to Hugging Face `datasets` repo
