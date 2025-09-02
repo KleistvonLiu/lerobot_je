@@ -19,16 +19,15 @@ DEFAULT_PNG_FILE_PATH = "/dev/video0"
 if __name__ == "__main__":
     init_logging()
     # 1. 创建相机配置
-    camera1_config = OpenCVCameraConfig(index_or_path=DEFAULT_PNG_FILE_PATH, width=640, height=480, fps=30)
-    cameras = {"camera1": camera1_config}
+    # camera1_config = OpenCVCameraConfig(index_or_path=DEFAULT_PNG_FILE_PATH, width=640, height=480, fps=30)
+    # cameras = {"camera1": camera1_config}
     # camera = OpenCVCamera(config)
     # camera.connect(warmup=False)
 
     # 2. 创建机器人配置
     config = AlohaAgileXFollowerConfig(
-        port="can_left",
-        cameras=cameras,
-        id="can_left",
+        port="can_right",
+        id="can_right",
     )
     print("Starting Aloha Agilex Follower Test")
     logging.info(config.id)

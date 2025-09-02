@@ -25,7 +25,7 @@ class SerialTactileSensor(TactileSensor):
         self.port = config.port
         self.baudrate = config.baudrate
         self.timeout = config.timeout
-        self.max_wait_s = 2.0  # 等待首帧/搜帧的最大时长
+        self.max_wait_s = 20.0  # 等待首帧/搜帧的最大时长
         self.width = config.width
         self.height = config.height
         self.frame_size = config.frame_size
@@ -41,8 +41,6 @@ class SerialTactileSensor(TactileSensor):
         self._latest_adc: Optional[np.ndarray] = None  # shape=(self.height, self.width), float32
         self._latest_cnt: Optional[int] = None
         self._latest_ts_ns: Optional[int] = None
-        # print(self.width, self.height, self.frame_size, self.header)
-        # print(self._h0, self._h1)
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({self.port})"
@@ -173,7 +171,9 @@ class SerialTactileSensor(TactileSensor):
 
         # 可选：预热，尝试等首帧，避免上层第一次 read() 立即拿不到
         if warmup:
-            self._first_frame_evt.wait(timeout=self.max_wait_s)
+            ok = self._first_frame_evt.wait(timeout=self.max_wait_s)
+            if not ok:
+                raise TimeoutError(f"{self}: no frame during warmup")
 
         logging.info(f"Tactile sensor {self.port} connected and reader started.")
 

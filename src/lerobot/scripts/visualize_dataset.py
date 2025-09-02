@@ -170,6 +170,10 @@ def visualize_dataset(
                 for dim_idx, val in enumerate(batch["observation.state"][i]):
                     rr.log(f"state/{dim_idx}", rr.Scalar(val.item()))
 
+            # display each camera image
+            for key in dataset.meta.tactile_keys:
+                rr.log(key, rr.Scalars(batch[key][i].max().item()))
+
             if "next.done" in batch:
                 rr.log("next.done", rr.Scalar(batch["next.done"][i].item()))
 

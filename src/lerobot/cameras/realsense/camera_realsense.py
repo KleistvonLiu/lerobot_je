@@ -24,6 +24,8 @@ from typing import Any, Dict, List
 import cv2
 import numpy as np
 
+from .configuration_realsense import RealSenseCameraConfig
+
 try:
     import pyrealsense2 as rs
 except Exception as e:
@@ -34,7 +36,6 @@ from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from ..camera import Camera
 from ..configs import ColorMode
 from ..utils import get_cv2_rotation
-from .configuration_realsense import RealSenseCameraConfig
 
 logger = logging.getLogger(__name__)
 

@@ -21,7 +21,7 @@ from ..tactile_config import TactileConfig
 @dataclass
 class SerialTactileConfig(TactileConfig):
     type: str = "serial"
-    baudrate: int = 9600
+    baudrate: int = 460800
     timeout: float = 1
     frame_size: int = None
     header: Tuple[int, ...] = (0xFF, 0x84)

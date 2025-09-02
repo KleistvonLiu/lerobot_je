@@ -51,7 +51,7 @@ class AlohaAgileXFollower(Robot):
         self.piper = C_PiperInterface(can_name=self.config.port)
         # self.piper.ConnectPort()
         self.cameras = make_cameras_from_configs(config.cameras)
-        self.tactile_sensor = make_tactiles_from_configs(config.tactiles)
+        self.tactile_sensors = make_tactiles_from_configs(config.tactiles)
         self.is_enabled_ = False
         self.is_robot_connected_ = False
         self.is_piper_port_connected_ = False
@@ -78,7 +78,7 @@ class AlohaAgileXFollower(Robot):
     def _tactile_ft(self) -> dict[str, tuple[int, int]]:
         tactile_sensors = {
             self.id+f"." +tactile: (self.config.tactiles[tactile].height, self.config.tactiles[tactile].width)
-            for tactile in self.tactile_sensor
+            for tactile in self.tactile_sensors
         }
         return tactile_sensors
 
@@ -106,6 +106,9 @@ class AlohaAgileXFollower(Robot):
         self.is_robot_connected_ = True
         for cam in self.cameras.values():
             cam.connect()
+
+        for tactile in self.tactile_sensors.values():
+            tactile.connect()
 
         logger.info(f"{self} connected.")
 
@@ -157,6 +160,11 @@ class AlohaAgileXFollower(Robot):
                 obs_dict[cam_key] = camera_frame
             # dt_ms = (time.perf_counter() - start) * 1e3
             # logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+
+        # Capture data from tactile sensors
+        for tactile_key, tactile in self.tactile_sensors.items():
+            tactile_frame = tactile.read()
+            obs_dict[tactile_key] = tactile_frame
 
         return obs_dict
 
@@ -252,6 +260,7 @@ class AlohaAgileXFollower(Robot):
                              int(action[3]), int(action[4]), int(action[5]))
         # time_point3 = time.perf_counter()
         self.piper.GripperCtrl(abs(int(action[6])), 1000, 0x01, 0)
+        print("here")
         # time_point4 = time.perf_counter()
         # logging.info(
         #     f"time cost {1e3 * (time_point1 - start_episode_t):.3f}/{1e3 * (time_point2 - start_episode_t):.3f}/"
@@ -283,6 +292,9 @@ class AlohaAgileXFollower(Robot):
         for cam in self.cameras.values():
             cam.disconnect()
 
+        for tactile in self.tactile_sensors.values():
+            tactile.disconnect()
+
         logger.info(f"{self} disconnected.")
 
     def disconnect_port(self):
@@ -291,12 +303,13 @@ class AlohaAgileXFollower(Robot):
             self.is_piper_port_connected_ = False
 
     def just_for_test(self):
-        # self.piper.ConnectPort()
+        print("here just for test")
+        self.piper.ConnectPort()
         max_steps = 10000000000
         for idx in range(max_steps):
             start_time = time.perf_counter()
             self.piper.MotionCtrl_2(0x01, 0x01, 100)
-            self.piper.JointCtrl(10000, 0, 0, 0, 0, 0)
+            self.piper.JointCtrl(0, 0, 0, 0, 0, 0)
             self.piper.GripperCtrl(abs(0), 1000, 0x01, 0)
             end_time = time.perf_counter()
             if idx % 1 == 0:

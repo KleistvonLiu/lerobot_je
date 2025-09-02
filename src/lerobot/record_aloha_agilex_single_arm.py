@@ -255,9 +255,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     merged_observation_features = {**robot1.observation_features}
     action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(merged_observation_features, "observation", cfg.dataset.video)
-    print(obs_features)
-    print(action_features)
-    exit(1)
     dataset_features = {**action_features, **obs_features}
 
     if cfg.resume:

@@ -123,8 +123,6 @@ class OrbbecCamera(Camera):
         self.frame_lock: Lock = Lock()
         self.latest_frame: np.ndarray | None = None
         self.new_frame_event: Event = Event()
-        # self.logs = {}
-        # self.temporal_filter = TemporalFilter(config.TemporalFilter_alpha)
         self.device = config.device_list.get_device_by_serial_number(self.index_or_path)
 
     @property
@@ -372,6 +370,7 @@ class OrbbecCamera(Camera):
             return None
         # logging.error(f"Camera {self.index_or_path} receives all frames, color:{not not color_frame}, depth:{not not depth_frame}")
 
+        result = None
         try:
             # 转成 numpy 彩色图
             color_image = frame_to_rgb_image(color_frame)
@@ -390,7 +389,7 @@ class OrbbecCamera(Camera):
                 result: Union[np.ndarray, Tuple[np.ndarray, np.ndarray]] = color_image
 
         except Exception as e:
-            logging.warning("post_process_depth_frame error: %s", e)
+            logging.warning(f"post_process_depth_frame error:{e}")
 
         # 同步原有日志与成员
         # self.logs["delta_timestamp_s"] = time.perf_counter() - start_time

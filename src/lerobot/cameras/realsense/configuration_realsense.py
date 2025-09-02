@@ -53,7 +53,7 @@ class RealSenseCameraConfig(CameraConfig):
         - For `fps`, `width` and `height`, either all of them need to be set, or none of them.
     """
 
-    serial_number_or_name: str
+    serial_number_or_name: str = ""
     color_mode: ColorMode = ColorMode.RGB
     use_depth: bool = False
     rotation: Cv2Rotation = Cv2Rotation.NO_ROTATION

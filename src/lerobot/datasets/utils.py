@@ -432,6 +432,13 @@ def hw_to_dataset_features(
     _validate_feature_names(features)
     return features
 
+def strip_tactile_prefix(key: str, prefix: str) -> str:
+    parts = key.split('.', 3)  # 最多切成4段
+    # 期望结构: [prefix, "tactile" or "tactiles", name, rest]
+    if len(parts) >= 4 and parts[0] == prefix and parts[1] in ("tactile", "tactiles"):
+        return parts[3]  # rest
+    return key  # 结构不符就原样返回
+
 
 def build_dataset_frame(
     ds_features: dict[str, dict], values: dict[str, Any], prefix: str
@@ -444,7 +451,8 @@ def build_dataset_frame(
             frame[key] = np.array([values[name] for name in ft["names"]], dtype=np.float32)
         elif ft["dtype"] in ["image", "video"]:
             frame[key] = values[key.removeprefix(f"{prefix}.images.")]
-
+        elif ft["dtype"] == "float32" and len(ft["shape"]) == 2:
+            frame[key] = np.array(values[strip_tactile_prefix(key, prefix)], dtype=np.float32)
     return frame
 
 
@@ -762,7 +770,6 @@ class IterableNamespace(SimpleNamespace):
 def validate_frame(frame: dict, features: dict):
     expected_features = set(features) - set(DEFAULT_FEATURES)
     actual_features = set(frame)
-
     error_message = validate_features_presence(actual_features, expected_features)
 
     common_features = actual_features & expected_features
