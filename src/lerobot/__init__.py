@@ -186,6 +186,11 @@ available_cameras = [
     "orbbec",
 ]
 
+# lists all available tactiles from `lerobot/robot_devices/tactile`
+available_tactiles = [
+    "serial",
+]
+
 # lists all available motors from `lerobot/robot_devices/motors`
 available_motors = [
     "dynamixel",

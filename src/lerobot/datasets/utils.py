@@ -398,7 +398,8 @@ def hw_to_dataset_features(
 ) -> dict[str, dict]:
     features = {}
     joint_fts = {key: ftype for key, ftype in hw_features.items() if ftype is float}
-    cam_fts = {key: shape for key, shape in hw_features.items() if isinstance(shape, tuple)}
+    cam_fts = {key: shape for key, shape in hw_features.items() if isinstance(shape, tuple) and len(shape) == 3}
+    tactile_fts = {key: shape for key, shape in hw_features.items() if isinstance(shape, tuple) and len(shape) == 2}
 
     if joint_fts and prefix == "action":
         features[prefix] = {
@@ -419,6 +420,13 @@ def hw_to_dataset_features(
             "dtype": "video" if use_video else "image",
             "shape": shape,
             "names": ["height", "width", "channels"],
+        }
+
+    for key, shape in tactile_fts.items():
+        features[f"{prefix}.tactile.{key}"] = {
+            "dtype": "float32",
+            "shape": shape,
+            "names": ["height", "width"],
         }
 
     _validate_feature_names(features)

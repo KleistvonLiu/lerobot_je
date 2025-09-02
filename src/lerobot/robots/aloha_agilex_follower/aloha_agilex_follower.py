@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 
 from lerobot.cameras.utils import make_cameras_from_configs
+from lerobot.tactile.utils import make_tactiles_from_configs
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.dynamixel import (
@@ -50,6 +51,7 @@ class AlohaAgileXFollower(Robot):
         self.piper = C_PiperInterface(can_name=self.config.port)
         # self.piper.ConnectPort()
         self.cameras = make_cameras_from_configs(config.cameras)
+        self.tactile_sensor = make_tactiles_from_configs(config.tactiles)
         self.is_enabled_ = False
         self.is_robot_connected_ = False
         self.is_piper_port_connected_ = False
@@ -72,9 +74,17 @@ class AlohaAgileXFollower(Robot):
             }
         return {**base, **depth}
 
+    @property
+    def _tactile_ft(self) -> dict[str, tuple[int, int]]:
+        tactile_sensors = {
+            self.id+f"." +tactile: (self.config.tactiles[tactile].height, self.config.tactiles[tactile].width)
+            for tactile in self.tactile_sensor
+        }
+        return tactile_sensors
+
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        return {**self._motors_ft, **self._cameras_ft}
+        return {**self._motors_ft, **self._cameras_ft, **self._tactile_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:

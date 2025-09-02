@@ -14,22 +14,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import abc
-from dataclasses import dataclass
-from enum import Enum
+from pathlib import Path
+from typing import TypeAlias
 
-import draccus
+from .tactile_sensor import TactileSensor
+from .tactile_config import TactileConfig
 
-@dataclass(kw_only=True)
-class TactileConfig(draccus.ChoiceRegistry, abc.ABC):
-    port: str = None
-    width: int = None
-    height: int = None ##距离接口端最近的边定义为height
+IndexOrPath: TypeAlias = int | Path
 
-    @property
-    def get_port(self) -> str:
-        return self.port
 
-    @property
-    def type(self) -> str:
-        return self.get_choice_name(self.__class__)
+def make_tactiles_from_configs(tactile_config: dict[str, TactileConfig]) -> dict[str, TactileSensor]:
+    tactiles = {}
+    for key, cfg in tactile_config.items():
+        if cfg.type == "serial":
+            from .serial.serial_tactile_sensor import SerialTactileSensor
+            tactiles[key] = SerialTactileSensor(cfg)
+        else:
+            raise ValueError(f"The motor type '{cfg.type}' is not valid.")
+    return tactiles

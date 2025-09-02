@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Tuple
 
 from ..tactile_config import TactileConfig
 
@@ -23,3 +23,5 @@ class SerialTactileConfig(TactileConfig):
     type: str = "serial"
     baudrate: int = 9600
     timeout: float = 1
+    frame_size: int = None
+    header: Tuple[int, ...] = (0xFF, 0x84)

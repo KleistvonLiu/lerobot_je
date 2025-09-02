@@ -1,91 +1,43 @@
 #!/usr/bin/env python3
 # fast_visualize_tactile_cv2_with_right_label.py
-import time, sys, argparse, struct, os
+import time, sys, argparse, os
+from typing import Tuple
+
 import numpy as np
 import serial
 import cv2
 
+# --- 引入后台读取类 ---
+try:
+    from lerobot.tactile.serial.serial_tactile_sensor import SerialTactileSensor
+    from lerobot.tactile.serial.serial_tactile_config import SerialTactileConfig
+except Exception as e:
+    print("[导入错误] 无法导入 SerialTactileSensor/SerialTactileConfig：", e, file=sys.stderr)
+    print("请确认模块路径，例如 lerobot.utils.tactile.serial_tactile_sensor", file=sys.stderr)
+    sys.exit(1)
+
 # --- 可选：用 Pillow 画中文 ---
 try:
     from PIL import Image, ImageDraw, ImageFont
+
     PIL_OK = True
 except Exception:
     PIL_OK = False
 
-HEADER     = b'\xFF\x84'
-FRAME_SIZE = 70
 ROWS, COLS = 4, 8
-CH         = ROWS * COLS
+CH = ROWS * COLS
 
 MIN_VAL = 0.0
 MAX_VAL = 100.0
 
-# -------- 串口帧读取（缓冲找帧头，低开销） ----------
-class FrameReader:
-    def __init__(self, port, baud, read_chunk=1024, timeout=0.02):
-        self.ser = serial.Serial(
-            port=port, baudrate=baud,
-            bytesize=8, parity='N', stopbits=1,
-            timeout=timeout, write_timeout=0.2,
-            rtscts=False, dsrdtr=False, xonxoff=False
-        )
-        try:
-            self.ser.dtr = True
-            self.ser.rts = False
-        except Exception:
-            pass
-        self.buf = bytearray()
-        self.read_chunk = read_chunk
-        self.ser.reset_input_buffer()
-
-    def close(self):
-        try: self.ser.close()
-        except Exception: pass
-
-    @staticmethod
-    def _verify_checksum(frame: memoryview) -> bool:
-        s = 0
-        for b in frame[2:68]:  # 2..67 求和
-            s += b
-        calc = s & 0xFFFF
-        recv = (frame[68] << 8) | frame[69]
-        return calc == recv
-
-    def read_frame(self, deadline_s=0.5):
-        end = time.monotonic() + deadline_s
-        while time.monotonic() < end:
-            chunk = self.ser.read(self.read_chunk)
-            if chunk:
-                self.buf.extend(chunk)
-            else:
-                time.sleep(0.001)
-
-            start = self.buf.find(HEADER)
-            while start != -1:
-                avail = len(self.buf) - start
-                if avail < FRAME_SIZE:
-                    break
-                frame = self.buf[start:start+FRAME_SIZE]
-                del self.buf[:start+FRAME_SIZE]
-                mv = memoryview(frame)
-                if self._verify_checksum(mv):
-                    return bytes(frame)
-                start = self.buf.find(HEADER)
-        return None
-
-_unpack_fmt = '>' + 'H'*CH
-
-def parse_adc(frame: bytes):
-    cnt = struct.unpack_from('>H', frame, 2)[0]
-    adc = struct.unpack_from(_unpack_fmt, frame, 4)
-    return cnt, np.frombuffer(np.asarray(adc, dtype=np.uint16), dtype=np.uint16).astype(np.float32, copy=False)
 
 def build_index_map(reverse_rows=True, flipud=False, fliplr=False):
-    grid = np.arange(ROWS*COLS).reshape(ROWS, COLS)
+    grid = np.arange(ROWS * COLS).reshape(ROWS, COLS)
     if reverse_rows: grid = grid[::-1, :]
     if flipud:       grid = np.flipud(grid)
     if fliplr:       grid = np.fliplr(grid)
     return grid.ravel()
+
 
 # -------- OpenCV 可视化（右侧中文竖排面板） ----------
 class VisualizerCV2:
@@ -100,17 +52,17 @@ class VisualizerCV2:
         right_width: 右侧面板宽度（像素）。None 则取 int(scale*0.9)
         font_path: 指定中文字体路径（如 NotoSansCJK / 思源黑体）；若不提供将自动猜测
         """
-        self.title     = title
-        self.scale     = int(scale)
-        self.mode      = mode
-        self.show      = show
+        self.title = title
+        self.scale = int(scale)
+        self.mode = mode
+        self.show = show
         # OpenCV 自带字体（给 text 模式数字用，不影响中文）
         if font is None:
             self.font = getattr(cv2, "FONT_HERSHEY_SIMPLEX",
-                         getattr(cv2, "FONT_HERSHEY_PLAIN", 0))
+                                getattr(cv2, "FONT_HERSHEY_PLAIN", 0))
         else:
             self.font = font
-        self.decimals  = decimals
+        self.decimals = decimals
         self.draw_grid = draw_grid
 
         self.H = ROWS * self.scale
@@ -118,7 +70,7 @@ class VisualizerCV2:
 
         # 右侧中文面板（预渲染一次，后续直接拼接）
         self.right_text = right_text
-        self.right_w    = int(right_width if right_width is not None else max(40, self.scale * 9 // 10))
+        self.right_w = int(right_width if right_width is not None else max(40, self.scale * 9 // 10))
         self.right_panel_bgr = self._build_right_panel(self.H, self.right_w, right_text, font_path)
 
         self.W_total = self.W + self.right_w
@@ -237,11 +189,17 @@ class VisualizerCV2:
         out = np.hstack([img, self.right_panel_bgr])
         cv2.imshow(self.title, out)
 
+
 def main():
-    ag = argparse.ArgumentParser("Ultra-fast tactile visualizer (OpenCV backend) + right Chinese label")
-    ag.add_argument("--port", default="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0")
+    ag = argparse.ArgumentParser("Tactile visualizer (OpenCV) + right Chinese label (SerialTactileSensor backend)")
+    ag.add_argument("--port",
+                    default="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0")
     ag.add_argument("--baud", type=int, default=460800)
     ag.add_argument("--timeout", type=float, default=0.5)
+    ag.add_argument("--width", type=int, default=8)
+    ag.add_argument("--height", type=int, default=4)
+    ag.add_argument("--frame_size", type=int, default=70)
+    ag.add_argument("--header", type=Tuple[int, ...], default=(0xFF, 0x84))
 
     ag.add_argument("--mode", choices=["heatmap", "text"], default="heatmap")
     ag.add_argument("--display", choices=["mapped", "raw"], default="mapped")  # text 模式有效
@@ -266,36 +224,50 @@ def main():
     use_map = args.adc_min is not None and args.adc_max is not None and args.adc_max > args.adc_min
     if use_map:
         scale = 100.0 / (args.adc_max - args.adc_min)
-        bias  = -args.adc_min * scale
+        bias = -args.adc_min * scale
     else:
         scale = 1.0
-        bias  = 0.0
+        bias = 0.0
 
+    # --- 使用后台读取类 ---
     try:
-        fr = FrameReader(args.port, args.baud)
+        cfg = SerialTactileConfig(port=args.port, baudrate=args.baud, timeout=args.timeout, width=args.width,
+                                  height=args.height, frame_size=args.frame_size,header=args.header)
+        sensor = SerialTactileSensor(cfg)
+        sensor.connect(warmup=True)  # 等首帧，内部后台线程开始工作
     except serial.SerialException as e:
-        print(f"[串口异常] {e}", file=sys.stderr); sys.exit(1)
+        print(f"[串口异常] {e}", file=sys.stderr);
+        sys.exit(1)
+    except Exception as e:
+        print(f"[错误] 初始化传感器失败：{e}", file=sys.stderr);
+        sys.exit(1)
 
     vis = VisualizerCV2(title="Tactile", scale=args.scale,
                         mode=args.mode, show=args.display, decimals=args.decimals,
                         right_text=args.right_text, right_width=args.right_width, font_path=args.font_path)
 
-    target_dt = 1.0 / 20.0
+    target_dt = 1.0 / 20.0  # 设备 20Hz，可视化节流到 20Hz
     last_show = 0.0
 
     try:
         while True:
-            frame = fr.read_frame(deadline_s=args.timeout)
-            if frame is None:
-                if cv2.waitKey(1) == 27:  # ESC 退出
+            try:
+                # 后台线程以 20Hz 更新最新帧；这里拿到的是最新缓存
+                adc_mat = sensor.read()  # shape=(ROWS, COLS), float32（原始 ADC 计数）
+            except TimeoutError:
+                # 首帧或偶发无数据，继续循环
+                if cv2.waitKey(1) == 27:
                     break
                 continue
 
-            cnt, adc = parse_adc(frame)
+            adc = adc_mat.ravel()  # 展平为 32
             vals = adc * scale + bias if use_map else adc
-            # np.clip(vals, MIN_VAL, MAX_VAL, out=vals)  # 如需严格 0..100 可开启
+            # 如需严格裁剪到 0..100：
+            # np.clip(vals, MIN_VAL, MAX_VAL, out=vals)
 
-            ordered = np.take(vals, idx_map, mode='clip')  # 4x8 顺序
+            # 映射到 4x8 的显示顺序
+            ordered = np.take(vals, idx_map, mode='clip')
+
             if time.monotonic() - last_show >= target_dt:
                 if args.mode == "heatmap":
                     vis.render_heatmap(ordered)
@@ -313,8 +285,12 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        fr.close()
+        try:
+            sensor.disconnect()
+        except Exception:
+            pass
         cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

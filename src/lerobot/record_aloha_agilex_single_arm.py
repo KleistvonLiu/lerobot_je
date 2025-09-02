@@ -47,6 +47,7 @@ from lerobot.cameras import (  # noqa: F401
 )
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.orbbec.configuration_orbbec import OrbbecCameraConfig  # noqa: F401
+from lerobot.tactile.serial.serial_tactile_config import SerialTactileConfig  # noqa: F401
 from lerobot.datasets.image_writer import safe_stop_image_writer
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
@@ -254,6 +255,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     merged_observation_features = {**robot1.observation_features}
     action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(merged_observation_features, "observation", cfg.dataset.video)
+    print(obs_features)
+    print(action_features)
+    exit(1)
     dataset_features = {**action_features, **obs_features}
 
     if cfg.resume:

@@ -15,6 +15,7 @@
 from dataclasses import dataclass, field
 
 from lerobot.cameras import CameraConfig
+from lerobot.tactile import TactileConfig
 
 from ..config import RobotConfig
 
@@ -34,6 +35,8 @@ class AlohaAgileXFollowerConfig(RobotConfig):
 
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    # tactiles
+    tactiles: dict[str, TactileConfig] = field(default_factory=dict)
 
     # Set to `True` for backward compatibility with previous policies/dataset
     use_degrees: bool = False
