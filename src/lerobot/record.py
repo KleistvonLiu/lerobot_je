@@ -226,6 +226,32 @@ def record_loop(
             events["exit_early"] = False
             break
 
+@safe_stop_image_writer
+def teleoperate_loop(
+    robot: Robot,
+    events: dict,
+    fps: int,
+    teleop: Teleoperator | None = None,
+    control_time_s: int | None = None,
+):
+
+    timestamp = 0
+    start_episode_t = time.perf_counter()
+    while timestamp < control_time_s:
+        start_loop_t = time.perf_counter()
+
+        action = teleop.get_action()
+
+        # Action can eventually be clipped using `max_relative_target`,
+        # so action actually sent is saved in the dataset.
+        sent_action = robot.send_action(action)
+
+        dt_s = time.perf_counter() - start_loop_t
+        busy_wait(1 / fps - dt_s)
+
+        timestamp = time.perf_counter() - start_episode_t
+        if events["stop_preparing"].is_set():
+            break
 
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
@@ -274,6 +300,15 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         teleop.connect()
 
     listener, events = init_keyboard_listener()
+
+    log_say("Starting preparing teleoperation")
+    teleoperate_loop(
+        robot=robot,
+        events=events,
+        fps=cfg.dataset.fps,
+        teleop=teleop,
+        control_time_s=cfg.dataset.episode_time_s,
+    )
 
     for recorded_episodes in range(cfg.dataset.num_episodes):
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
