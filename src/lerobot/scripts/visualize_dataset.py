@@ -158,6 +158,9 @@ def visualize_dataset(
             # display each camera image
             for key in dataset.meta.camera_keys:
                 # TODO(rcadene): add `.compress()`? is it lossless?
+                # print(key)
+                if key.endswith("depth"):
+                    continue
                 rr.log(key, rr.Image(to_hwc_uint8_numpy(batch[key][i])))
 
             # display each dimension of action space (e.g. actuators command)

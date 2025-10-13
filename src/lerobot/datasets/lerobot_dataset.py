@@ -993,7 +993,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
             if "depth" in str(img_dir).casefold():
-                encode_video_frames_depth_image_v4(img_dir, video_path, self.fps, overwrite=True, is_depth_image=True)
+                encode_video_frames_depth_image_v4(img_dir, video_path, self.fps, overwrite=True)
             else:
                 encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
             # encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
