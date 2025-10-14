@@ -2,16 +2,20 @@
 # -*- coding: utf-8 -*-
 
 """
-配合check_data.py使用
-check_data.py检测哪些数据有问题，最简单的方法就是直接使用其他数据集替换，a是被替换的index，b是替换的index
-python replace_episode.py --root /home/kleist/Documents/Database/test_0928_100_v2 \
-  --a 3 --b 1 --chunk chunk-000 --dry-run
+配合 check_data.py 使用
+check_data.py 检测哪些数据有问题，最简单的方法就是直接使用其他数据集替换，
+a 是被替换的 index，b 是替换来源的 index
+
+示例：
+python src/lerobot/replace_single_episode.py --root /home/kleist/Documents/Database/test_0928_100_v2 --a 54 --b 55 --chunk chunk-000
 """
+
 import argparse
 import json
 import shutil
 from pathlib import Path
 from datetime import datetime
+
 
 def copy_file(src: Path, dst: Path, dry: bool):
     if not src.exists():
@@ -23,10 +27,11 @@ def copy_file(src: Path, dst: Path, dry: bool):
         shutil.copy2(src, dst)
         print(f"copied {src} -> {dst}")
 
+
 def backup_file(p: Path, dataset_root: Path, backup_root: Path, dry: bool):
     if not p.exists():
         return
-    rel = p.relative_to(dataset_root)   # 修正：以数据集根目录为基准
+    rel = p.relative_to(dataset_root)
     bak = backup_root / rel
     bak.parent.mkdir(parents=True, exist_ok=True)
     if dry:
@@ -35,11 +40,13 @@ def backup_file(p: Path, dataset_root: Path, backup_root: Path, dry: bool):
         shutil.copy2(p, bak)
         print(f"backup  {p} -> {bak}")
 
+
 def load_jsonl(p: Path):
     if not p.exists():
         raise FileNotFoundError(f"JSONL 不存在: {p}")
     with p.open("r", encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
 
 def save_jsonl_atomic(p: Path, rows):
     tmp = p.with_suffix(p.suffix + ".tmp")
@@ -48,39 +55,115 @@ def save_jsonl_atomic(p: Path, rows):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     tmp.replace(p)
 
-def replace_meta_episode(jsonl_path: Path, a: int, b: int, backup_root: Path, dataset_root: Path, dry: bool):
+
+def _deepcopy(obj):
+    # 避免共享引用
+    return json.loads(json.dumps(obj))
+
+
+def _patch_stats_episode_index(row: dict, target_idx: int):
+    """
+    专门用于 episodes_stats.jsonl:
+    - 修改顶层 row["episode_index"]
+    - 同步修改 row["stats"]["episode_index"] 的 {min,max,mean} 等字段
+    """
+    row["episode_index"] = int(target_idx)
+
+    stats = row.get("stats", {})
+    epi = stats.get("episode_index")
+    if not isinstance(epi, dict):
+        return row  # 没有子项就跳过
+
+    def _set_list(field, value):
+        if field not in epi:
+            return
+        v = epi[field]
+        # 兼容各种形状：标量列表、嵌套一层列表等
+        def _overwrite(x, val):
+            if isinstance(x, list):
+                if len(x) == 0:
+                    return [val]
+                # 如果是 [[...]] 形状，递归覆盖
+                if isinstance(x[0], list):
+                    return [[val for _ in x[0]] for _ in x]
+                else:
+                    return [val for _ in x]
+            return [val]
+        epi[field] = _overwrite(v, value)
+
+    # 约定：min/max 用 int，mean/std 用 float；count 不改
+    _set_list("min", int(target_idx))
+    _set_list("max", int(target_idx))
+    _set_list("mean", float(target_idx))
+    # std 通常为 0；如果存在，我们按 0.0 处理（也可以保留原值）
+    if "std" in epi:
+        _set_list("std", 0.0)
+
+    # 回写
+    stats["episode_index"] = epi
+    row["stats"] = stats
+    return row
+
+
+def replace_meta_episode(jsonl_path: Path, a: int, b: int,
+                         backup_root: Path, dataset_root: Path, dry: bool):
+    """
+    在 jsonl 中找到 episode_index==a 的记录，用 episode_index==b 的记录替换；
+    若 a 不存在，则在合适位置插入一条从 b 拷贝而来的记录（并将其 episode_index 改为 a）。
+    对 episodes_stats.jsonl，会额外同步修改 stats.episode_index 的统计值。
+    """
     rows = load_jsonl(jsonl_path)
-    row_a_idx = next((i for i, r in enumerate(rows) if int(r.get("episode_index")) == a), None)
-    row_b_idx = next((i for i, r in enumerate(rows) if int(r.get("episode_index")) == b), None)
+
+    def _find_idx(target: int):
+        for i, r in enumerate(rows):
+            try:
+                if int(r.get("episode_index")) == target:
+                    return i
+            except Exception:
+                continue
+        return None
+
+    row_a_idx = _find_idx(a)
+    row_b_idx = _find_idx(b)
     if row_b_idx is None:
         raise ValueError(f"{jsonl_path.name}: 找不到 episode_index={b}")
 
+    new_row = _deepcopy(rows[row_b_idx])
+    # 根据文件名类型决定是否需要修 stats
+    if jsonl_path.name == "episodes_stats.jsonl":
+        new_row = _patch_stats_episode_index(new_row, a)
+    else:
+        new_row["episode_index"] = a
+
     if row_a_idx is None:
+        # 按 episode_index 升序插入
         insert_pos = 0
         for i, r in enumerate(rows):
-            if int(r.get("episode_index")) > a:
-                break
+            try:
+                if int(r.get("episode_index")) > a:
+                    break
+            except Exception:
+                pass
             insert_pos = i + 1
-        new_row = json.loads(json.dumps(rows[row_b_idx]))
-        new_row["episode_index"] = a
         new_rows = rows[:insert_pos] + [new_row] + rows[insert_pos:]
+        action = "insert"
     else:
         new_rows = list(rows)
-        new_row = json.loads(json.dumps(rows[row_b_idx]))
-        new_row["episode_index"] = a
         new_rows[row_a_idx] = new_row
+        action = "replace"
 
     if dry:
-        print(f"[DRY] 将 {jsonl_path.name} 中 episode_index={a} 用 {b} 的记录替换/插入")
+        print(f"[DRY] {jsonl_path.name}: {action} episode_index={a} ← {b}")
     else:
         backup_file(jsonl_path, dataset_root, backup_root, dry=False)
         save_jsonl_atomic(jsonl_path, new_rows)
-        print(f"updated {jsonl_path.name}: episode {a} ← {b}")
+        print(f"updated {jsonl_path.name}: episode {a} ← {b} ({action})")
+
 
 def main():
-    ap = argparse.ArgumentParser(description="把索引 a 的内容全部用索引 b 的内容替换")
+    ap = argparse.ArgumentParser(description="把索引 a 的内容用索引 b 的内容替换（data/videos/meta 三处）")
     ap.add_argument("--root", required=True, help="数据集根目录（包含 data/, videos/, meta/）")
-    ap.add_argument("--a", type=int, required=True, help="目标 episode 索引（被覆盖）")
+    ap.add_argument("--a", type=int, required=True, help="目标 episode 索引（被覆盖/插入）")
     ap.add_argument("--b", type=int, required=True, help="来源 episode 索引（作为模板）")
     ap.add_argument("--chunk", default="chunk-000", help="分块目录名，默认 chunk-000")
     ap.add_argument("--no-backup", action="store_true", help="不做备份（默认会在 .backup_replace_episode 下备份）")
@@ -98,10 +181,12 @@ def main():
     ep_a = f"episode_{a:06d}"
     ep_b = f"episode_{b:06d}"
 
-    backup_root = root / ".backup_replace_episode" / (datetime.now().strftime("%Y%m%d_%H%M%S") if not args.no_backup else "NO_BACKUP")
+    backup_root = root / ".backup_replace_episode" / (
+        datetime.now().strftime("%Y%m%d_%H%M%S") if not args.no_backup else "NO_BACKUP"
+    )
 
     print(f"ROOT: {root}")
-    print(f"操作: {a} <- {b}  （覆盖 A 的内容为 B）")
+    print(f"操作: {a} <- {b}  （覆盖/插入 A 的内容为 B）")
     print(f"dry-run: {args.dry_run}, backup: {not args.no_backup}")
 
     # 1) parquet
@@ -125,7 +210,7 @@ def main():
     else:
         print(f"[WARN] 未找到视频目录: {videos_dir}")
 
-    # 3) meta
+    # 3) meta（注意：episodes_stats.jsonl 需要同步改两处 episode_index）
     for name in ("episodes.jsonl", "episodes_stats.jsonl"):
         path = meta_dir / name
         replace_meta_episode(path, a, b, backup_root, root, dry=args.dry_run)
@@ -134,6 +219,7 @@ def main():
     print(f"  ls {data_dir}/{ep_a}.parquet")
     print(f"  ls {videos_dir}/**/{ep_a}.mp4")
     print(f"  grep '\"episode_index\": {a}' {meta_dir}/episodes*.jsonl")
+
 
 if __name__ == "__main__":
     main()
