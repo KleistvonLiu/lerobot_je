@@ -857,6 +857,8 @@ def validate_episode_buffer(episode_buffer: dict, total_episodes: int, features:
         raise ValueError("task key not found in episode_buffer")
 
     if episode_buffer["episode_index"] != total_episodes:
+        print("DEBUG: episode_buffer['episode_index'] =", episode_buffer.get("episode_index"))
+        print("DEBUG: total_episodes =", total_episodes)
         # TODO(aliberts): Add option to use existing episode_index
         raise NotImplementedError(
             "You might have manually provided the episode_buffer with an episode_index that doesn't "
