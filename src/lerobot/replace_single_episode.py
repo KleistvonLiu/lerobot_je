@@ -7,7 +7,8 @@ check_data.py 检测哪些数据有问题，最简单的方法就是直接使用
 a 是被替换的 index，b 是替换来源的 index
 
 示例：
-python src/lerobot/replace_single_episode.py --root /home/kleist/Documents/Database/test_0928_100_v2 --a 54 --b 55 --chunk chunk-000
+python src/lerobot/replace_single_episode.py --root /home/kleist/Documents/Database/test_0928_100_v2 \
+  --a 54 --b 55 --chunk chunk-000
 """
 
 import argparse
@@ -15,6 +16,14 @@ import json
 import shutil
 from pathlib import Path
 from datetime import datetime
+
+# 新增：pyarrow 用于修改 parquet 内的 episode_index 列
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except Exception as _e:
+    pa = None
+    pq = None
 
 
 def copy_file(src: Path, dst: Path, dry: bool):
@@ -57,7 +66,6 @@ def save_jsonl_atomic(p: Path, rows):
 
 
 def _deepcopy(obj):
-    # 避免共享引用
     return json.loads(json.dumps(obj))
 
 
@@ -65,41 +73,38 @@ def _patch_stats_episode_index(row: dict, target_idx: int):
     """
     专门用于 episodes_stats.jsonl:
     - 修改顶层 row["episode_index"]
-    - 同步修改 row["stats"]["episode_index"] 的 {min,max,mean} 等字段
+    - 同步修改 row["stats"]["episode_index"] 的 {min,max,mean,std} 等字段
     """
     row["episode_index"] = int(target_idx)
 
     stats = row.get("stats", {})
     epi = stats.get("episode_index")
     if not isinstance(epi, dict):
-        return row  # 没有子项就跳过
+        return row
 
     def _set_list(field, value):
         if field not in epi:
             return
         v = epi[field]
-        # 兼容各种形状：标量列表、嵌套一层列表等
+
         def _overwrite(x, val):
             if isinstance(x, list):
                 if len(x) == 0:
                     return [val]
-                # 如果是 [[...]] 形状，递归覆盖
                 if isinstance(x[0], list):
                     return [[val for _ in x[0]] for _ in x]
                 else:
                     return [val for _ in x]
             return [val]
+
         epi[field] = _overwrite(v, value)
 
-    # 约定：min/max 用 int，mean/std 用 float；count 不改
     _set_list("min", int(target_idx))
     _set_list("max", int(target_idx))
     _set_list("mean", float(target_idx))
-    # std 通常为 0；如果存在，我们按 0.0 处理（也可以保留原值）
     if "std" in epi:
         _set_list("std", 0.0)
 
-    # 回写
     stats["episode_index"] = epi
     row["stats"] = stats
     return row
@@ -109,7 +114,7 @@ def replace_meta_episode(jsonl_path: Path, a: int, b: int,
                          backup_root: Path, dataset_root: Path, dry: bool):
     """
     在 jsonl 中找到 episode_index==a 的记录，用 episode_index==b 的记录替换；
-    若 a 不存在，则在合适位置插入一条从 b 拷贝而来的记录（并将其 episode_index 改为 a）。
+    若 a 不存在，则在合适位置插入从 b 拷贝而来的记录（并将其 episode_index 改为 a）。
     对 episodes_stats.jsonl，会额外同步修改 stats.episode_index 的统计值。
     """
     rows = load_jsonl(jsonl_path)
@@ -129,14 +134,12 @@ def replace_meta_episode(jsonl_path: Path, a: int, b: int,
         raise ValueError(f"{jsonl_path.name}: 找不到 episode_index={b}")
 
     new_row = _deepcopy(rows[row_b_idx])
-    # 根据文件名类型决定是否需要修 stats
     if jsonl_path.name == "episodes_stats.jsonl":
         new_row = _patch_stats_episode_index(new_row, a)
     else:
         new_row["episode_index"] = a
 
     if row_a_idx is None:
-        # 按 episode_index 升序插入
         insert_pos = 0
         for i, r in enumerate(rows):
             try:
@@ -160,8 +163,43 @@ def replace_meta_episode(jsonl_path: Path, a: int, b: int,
         print(f"updated {jsonl_path.name}: episode {a} ← {b} ({action})")
 
 
+# 新增：复制完 parquet 后，把其中的 episode_index 列改为 a
+def patch_parquet_episode_index(parquet_path: Path, target_idx: int, dry: bool):
+    if pa is None or pq is None:
+        raise RuntimeError("需要 pyarrow 来修改 parquet 的列，请先安装：pip install pyarrow")
+
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"parquet 文件不存在: {parquet_path}")
+
+    # 先用 meta 拿行数，便于 dry-run 显示
+    pf = pq.ParquetFile(parquet_path)
+    nrows = pf.metadata.num_rows
+
+    if dry:
+        print(f"[DRY] patch parquet {parquet_path} : set episode_index={target_idx} for {nrows} rows")
+        return
+
+    table = pq.read_table(parquet_path)
+    names = table.schema.names
+    if "episode_index" not in names:
+        raise KeyError(f"{parquet_path} 不含列 'episode_index'，无法修改")
+
+    col_idx = names.index("episode_index")
+    old_col = table.column(col_idx)
+    target_type = old_col.type  # 保持原始整数类型（通常是 int64/int32）
+
+    # 构造同长度常量列
+    const_arr = pa.array([int(target_idx)] * table.num_rows, type=target_type)
+    new_table = table.set_column(col_idx, "episode_index", const_arr)
+
+    tmp_path = parquet_path.with_suffix(parquet_path.suffix + ".tmp")
+    pq.write_table(new_table, tmp_path)  # 如需指定压缩：compression="snappy"
+    tmp_path.replace(parquet_path)
+    print(f"patched episode_index in {parquet_path} -> {target_idx} (rows={nrows})")
+
+
 def main():
-    ap = argparse.ArgumentParser(description="把索引 a 的内容用索引 b 的内容替换（data/videos/meta 三处）")
+    ap = argparse.ArgumentParser(description="把索引 a 的内容用索引 b 的内容替换（data/videos/meta 三处），并修正 parquet 内 episode_index")
     ap.add_argument("--root", required=True, help="数据集根目录（包含 data/, videos/, meta/）")
     ap.add_argument("--a", type=int, required=True, help="目标 episode 索引（被覆盖/插入）")
     ap.add_argument("--b", type=int, required=True, help="来源 episode 索引（作为模板）")
@@ -189,12 +227,14 @@ def main():
     print(f"操作: {a} <- {b}  （覆盖/插入 A 的内容为 B）")
     print(f"dry-run: {args.dry_run}, backup: {not args.no_backup}")
 
-    # 1) parquet
+    # 1) parquet：先备份 A 的旧文件，再复制 B → A，最后修 A 的 parquet 内部 episode_index
     src_parquet = data_dir / f"{ep_b}.parquet"
     dst_parquet = data_dir / f"{ep_a}.parquet"
     if not args.no_backup:
         backup_file(dst_parquet, root, backup_root, dry=args.dry_run)
     copy_file(src_parquet, dst_parquet, dry=args.dry_run)
+    # 关键：修正 parquet 内部的 episode_index 列
+    patch_parquet_episode_index(dst_parquet, a, dry=args.dry_run)
 
     # 2) videos
     if videos_dir.exists():
@@ -217,6 +257,7 @@ def main():
 
     print("完成。建议检查：")
     print(f"  ls {data_dir}/{ep_a}.parquet")
+    print(f"  parquet-tools head -n 1 {data_dir}/{ep_a}.parquet | grep episode_index")
     print(f"  ls {videos_dir}/**/{ep_a}.mp4")
     print(f"  grep '\"episode_index\": {a}' {meta_dir}/episodes*.jsonl")
 
