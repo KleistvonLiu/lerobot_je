@@ -8,7 +8,7 @@ a 是被替换的 index，b 是替换来源的 index
 
 示例：
 python src/lerobot/replace_single_episode.py --root /home/kleist/Documents/Database/test_0928_100_v2 \
-  --a 54 --b 55 --chunk chunk-000
+  --a 83 --b 99 --chunk chunk-000
 """
 
 import argparse
