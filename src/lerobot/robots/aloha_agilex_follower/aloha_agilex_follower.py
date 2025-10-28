@@ -168,6 +168,31 @@ class AlohaAgileXFollower(Robot):
 
         return obs_dict
 
+    def get_status(self) -> dict[str, Any]:
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        if not self.is_piper_port_connected_:
+            self.piper.ConnectPort()
+            self.is_piper_port_connected_ = True
+
+
+        # Read arm position
+        start = time.perf_counter()
+        obs_dict = {
+            self.id + f".joint{i}.pos":
+                (getattr(self.piper.GetArmJointMsgs().joint_state, f"joint_{i + 1}"))
+            for i in range(6)  # 从 0 到 5
+        }
+        obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
+        obs_dict['endpose_x'] = self.piper.GetArmEndPoseMsgs().end_pose.X_axis
+        obs_dict['endpose_y'] = self.piper.GetArmEndPoseMsgs().end_pose.Y_axis
+        obs_dict['endpose_z'] = self.piper.GetArmEndPoseMsgs().end_pose.Z_axis
+        obs_dict['endpose_rx'] = self.piper.GetArmEndPoseMsgs().end_pose.RX_axis
+        obs_dict['endpose_ry'] = self.piper.GetArmEndPoseMsgs().end_pose.RY_axis
+        obs_dict['endpose_rz'] = self.piper.GetArmEndPoseMsgs().end_pose.RZ_axis
+        return obs_dict
+
     def get_leader_action(self) -> dict[str, Any]:
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
@@ -260,11 +285,25 @@ class AlohaAgileXFollower(Robot):
                              int(action[3]), int(action[4]), int(action[5]))
         # time_point3 = time.perf_counter()
         self.piper.GripperCtrl(abs(int(action[6])), 1000, 0x01, 0)
-        print("here")
+        # print("here")
         # time_point4 = time.perf_counter()
         # logging.info(
         #     f"time cost {1e3 * (time_point1 - start_episode_t):.3f}/{1e3 * (time_point2 - start_episode_t):.3f}/"
         #     f"{1e3 * (time_point3 - start_episode_t):.3f}/{1e3 * (time_point4 - start_episode_t):.3f}")
+        return
+
+    def send_endpose(self, action: np.ndarray):
+        """Command arm to move to a target joint configuration.
+        """
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+        if not self.is_enabled:
+            self.enable()
+        # time_point1 = time.perf_counter()
+        self.piper.MotionCtrl_2(0x01, 0x00, 100)
+        # time_point2 = time.perf_counter()
+        self.piper.EndPoseCtrl(int(action[0]*1000), int(action[1]*1000), int(action[2]*1000),
+                             int(action[3]*1000), int(action[4]*1000), int(action[5]*1000))
         return
 
     @property

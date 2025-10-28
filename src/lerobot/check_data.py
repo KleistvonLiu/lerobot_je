@@ -2,6 +2,7 @@
 # validate_stats.py ----------------------------------------------------------
 # 校验 episodes_stats.jsonl 中 action / observation.state 的 min‒max
 # 是否落在“硬编码”的合法区间。不合法时打印 episode_index 及异常维度
+# python3 src/lerobot/check_data.py /home/kleist/Documents/Database/test_0928/meta/episodes_stats.jsonl
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
