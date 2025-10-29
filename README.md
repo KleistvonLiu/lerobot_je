@@ -410,3 +410,6 @@ primaryClass={cs.RO}
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=huggingface/lerobot&type=Timeline)](https://star-history.com/#huggingface/lerobot&Timeline)
+
+
+streamlit run tools/edit_sim_recorded_dataset_gui.py
