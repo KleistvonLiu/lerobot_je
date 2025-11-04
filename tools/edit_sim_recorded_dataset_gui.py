@@ -206,14 +206,21 @@ def main():
                         if not keys:
                             st.warning(f"joint属性只支持: {allowed_joint_keys}")
                             return obj, prefix
+                        selected = st.selectbox(f"选择 joint 属性 {prefix}", keys, key=prefix, index=0 if keys else None)
+                        # 递归到 position/velocity/effort后停止
+                        value = obj[selected]
+                        if is_numeric_array(value):
+                            return value, prefix + "." + selected if prefix else selected
+                        else:
+                            return recursive_select(value, prefix + "." + selected if prefix else selected)
                     else:
                         keys = list(obj.keys())
-                    selected = st.selectbox(f"选择字典属性 {prefix}", keys, key=prefix)
-                    return recursive_select(obj[selected], prefix + "." + selected if prefix else selected), prefix + "." + selected if prefix else selected
+                        selected = st.selectbox(f"选择字典属性 {prefix}", keys, key=prefix, index=0 if keys else None)
+                        return recursive_select(obj[selected], prefix + "." + selected if prefix else selected)
                 elif isinstance(obj, list):
                     indices = list(range(len(obj)))
-                    selected = st.selectbox(f"选择列表索引 {prefix}", indices, key=prefix)
-                    return recursive_select(obj[selected], prefix + f"[{selected}]"), prefix + f"[{selected}]"
+                    selected = st.selectbox(f"选择列表索引 {prefix}", indices, key=prefix, index=0 if indices else None)
+                    return recursive_select(obj[selected], prefix + f"[{selected}]")
                 elif is_numeric_array(obj):
                     # 数值数组，停止递归，主流程处理维度
                     return obj, prefix
@@ -225,7 +232,7 @@ def main():
                 arr = np.array(value)
                 dim = None
                 if arr.ndim > 0:
-                    dim = st.selectbox("选择维度", list(range(arr.shape[0])), key=attr_path)
+                    dim = st.selectbox("选择维度", list(range(arr.shape[0])), key=attr_path, index=0 if arr.shape[0] > 0 else None)
                     attr_path_full = f"{attr_path}[{dim}]"
                 else:
                     attr_path_full = attr_path
@@ -246,7 +253,7 @@ def main():
                     seq.append(np.nan)
                     continue
                 obj = meta[top_selected]
-                # 用 get_attr 解析属性路径
+                # 只用下拉栏选择的完整路径索引，不做自动补齐
                 obj = get_attr(obj, attr_path[len(top_selected):].strip('.')) if attr_path != top_selected else obj
                 # 检查 obj 是否为数值数组
                 if obj is None or not is_numeric_array(obj):
