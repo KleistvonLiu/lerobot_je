@@ -314,6 +314,45 @@ def main():
                             interpolate_meta_attr(str(episode_dir), int(idx), attr_path_full)
                         st.success(f"已对 {len(outlier_idx)} 个异常点插值修复")
                         st.rerun()
+    # 分割并追加 episode
+    with st.expander("分割并追加 episode"):
+        split_start = st.number_input("起始帧 (start_idx)", min_value=0, max_value=max(0, frame_count-2), value=0)
+        split_end = st.number_input("结束帧 (end_idx, 包含)", min_value=split_start+1, max_value=frame_count-1, value=split_start+1)
+        if st.button("分割并追加为新 episode"):
+            # 1. 读取 meta
+            meta_path = Path(episode_dir) / "meta.jsonl"
+            with open(meta_path, 'r') as f:
+                lines = [json.loads(line) for line in f]
+            new_lines = lines[split_start:split_end+1]
+            # 2. 新 episode 目录
+            dataset_root_path = Path(dataset_root)
+            all_eps = get_episode_dirs(dataset_root)
+            new_ep_idx = int(all_eps[-1].name.split('_')[1]) + 1 if all_eps else 0
+            new_ep_dir = dataset_root_path / f"episode_{new_ep_idx:06d}"
+            new_ep_dir.mkdir(parents=True, exist_ok=True)
+            # 3. 写新 meta.jsonl，frame_idx 重编号
+            for i, item in enumerate(new_lines):
+                item['frame_idx'] = i
+            with open(new_ep_dir / "meta.jsonl", 'w') as f:
+                for item in new_lines:
+                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
+            # 4. 复制图片
+            old_images_dir = Path(episode_dir) / "images"
+            if old_images_dir.exists():
+                new_images_dir = new_ep_dir / "images"
+                new_images_dir.mkdir(exist_ok=True)
+                for cam_dir in old_images_dir.iterdir():
+                    if cam_dir.is_dir():
+                        new_cam_dir = new_images_dir / cam_dir.name
+                        new_cam_dir.mkdir(exist_ok=True)
+                        for i, old_idx in enumerate(range(split_start, split_end+1)):
+                            old_img = cam_dir / f"frame_{old_idx:06d}.png"
+                            new_img = new_cam_dir / f"frame_{i:06d}.png"
+                            if old_img.exists():
+                                import shutil
+                                shutil.copy(str(old_img), str(new_img))
+            st.success(f"已分割 {episode_dir.name} 的帧 {split_start}~{split_end}，追加为新 episode_{new_ep_idx:06d}")
+            st.rerun()
 
 # streamlit run tools/edit_sim_recorded_dataset_gui.py
 if __name__ == '__main__':
