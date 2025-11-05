@@ -5,19 +5,30 @@ from pathlib import Path
 import argparse
 import numpy as np
 from PIL import Image
+import re
 
 def get_episode_dirs(dataset_root):
     """Return sorted list of episode directories (Path objects)."""
     return sorted([p for p in Path(dataset_root).iterdir() if p.is_dir() and p.name.startswith('episode_')])
 
 def renumber_episodes(dataset_root, start_idx):
-    """Renumber episodes after deleting one, so episode_xxxxxx is continuous."""
+    """Renumber episodes after deleting one, so episode_xxxxxx is continuous, and update meta.jsonl episode_idx."""
     episode_dirs = get_episode_dirs(dataset_root)
     for ep in episode_dirs:
         ep_idx = int(ep.name.split('_')[1])
         if ep_idx > start_idx:
             new_idx = ep_idx - 1
             new_name = f"episode_{new_idx:06d}"
+            # 修改 meta.jsonl 里的 episode_idx
+            meta_path = ep / "meta.jsonl"
+            if meta_path.exists():
+                with open(meta_path, 'r') as f:
+                    lines = [json.loads(line) for line in f]
+                for item in lines:
+                    item['episode_idx'] = new_idx
+                with open(meta_path, 'w') as f:
+                    for item in lines:
+                        f.write(json.dumps(item, ensure_ascii=False) + '\n')
             ep.rename(ep.parent / new_name)
 
 def delete_episode(dataset_root, episode_idx):
@@ -43,9 +54,26 @@ def delete_frames(episode_dir, start_idx, num_frames):
     # 2. 删除指定帧
     keep = [i for i in range(len(lines)) if i not in frame_indices]
     new_lines = [lines[i] for i in keep]
-    # 3. 顺移frame_idx
+    # 3. 顺移frame_idx和frame_index，并递归替换图片索引
+    def recursive_update_img_idx(obj, old_idx, new_idx):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                obj[k] = recursive_update_img_idx(v, old_idx, new_idx)
+        elif isinstance(obj, list):
+            return [recursive_update_img_idx(v, old_idx, new_idx) for v in obj]
+        elif isinstance(obj, str):
+            pattern = rf"frame_{old_idx:06d}\.png"
+            new_name = f"frame_{new_idx:06d}.png"
+            return re.sub(pattern, new_name, obj)
+        return obj
     for new_idx, item in enumerate(new_lines):
         item['frame_idx'] = new_idx
+        if 'frame_index' in item:
+            item['frame_index'] = new_idx
+        # 递归替换所有 frame_xxxxxx.png
+        old_idx = keep[new_idx]
+        item = recursive_update_img_idx(item, old_idx, new_idx)
+        new_lines[new_idx] = item
     # 4. 删除图片
     images_dir = ep_dir / "images"
     if images_dir.exists():

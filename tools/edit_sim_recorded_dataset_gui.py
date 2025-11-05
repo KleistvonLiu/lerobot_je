@@ -330,9 +330,30 @@ def main():
             new_ep_idx = int(all_eps[-1].name.split('_')[1]) + 1 if all_eps else 0
             new_ep_dir = dataset_root_path / f"episode_{new_ep_idx:06d}"
             new_ep_dir.mkdir(parents=True, exist_ok=True)
-            # 3. 写新 meta.jsonl，frame_idx 重编号
+            # 3. 写新 meta.jsonl，frame_idx/episode_idx/相关索引重编号
+            def recursive_update(obj, old_idx, new_idx):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        obj[k] = recursive_update(v, old_idx, new_idx)
+                elif isinstance(obj, list):
+                    return [recursive_update(v, old_idx, new_idx) for v in obj]
+                elif isinstance(obj, str):
+                    # 替换 frame_xxxxxx.png
+                    pattern = rf"frame_{old_idx:06d}\.png"
+                    new_name = f"frame_{new_idx:06d}.png"
+                    return re.sub(pattern, new_name, obj)
+                return obj
             for i, item in enumerate(new_lines):
-                item['frame_idx'] = i
+                # 新 episode_idx
+                item['episode_idx'] = new_ep_idx
+                # frame_idx/相关索引重编号
+                for k in ['frame_idx', 'frame_index', 'frame_id']:
+                    if k in item:
+                        item[k] = i
+                # 递归替换所有 frame_xxxxxx.png
+                old_idx = split_start + i
+                item = recursive_update(item, old_idx, i)
+                new_lines[i] = item
             with open(new_ep_dir / "meta.jsonl", 'w') as f:
                 for item in new_lines:
                     f.write(json.dumps(item, ensure_ascii=False) + '\n')
@@ -353,6 +374,74 @@ def main():
                                 shutil.copy(str(old_img), str(new_img))
             st.success(f"已分割 {episode_dir.name} 的帧 {split_start}~{split_end}，追加为新 episode_{new_ep_idx:06d}")
             st.rerun()
+    # 一键检查数据一致性
+    with st.expander("一键检查数据一致性"):
+        if st.button("开始检查"):
+            report = []
+            episode_dirs = get_episode_dirs(dataset_root)
+            # 1. 检查 episode 索引
+            for idx, ep in enumerate(episode_dirs):
+                ep_idx = int(ep.name.split('_')[1])
+                meta_path = Path(ep) / "meta.jsonl"
+                if not meta_path.exists():
+                    report.append(f"{ep.name}: 缺少 meta.jsonl")
+                    continue
+                with open(meta_path, 'r') as f:
+                    lines = [json.loads(line) for line in f]
+                # 检查文件夹名和 meta 里的 episode_idx
+                for line in lines:
+                    if 'episode_idx' in line and line['episode_idx'] != ep_idx:
+                        report.append(f"{ep.name}: meta episode_idx {line['episode_idx']} != 文件夹索引 {ep_idx}")
+                if ep_idx != idx:
+                    report.append(f"{ep.name}: 文件夹索引 {ep_idx} 不连续，应为 {idx}")
+            # 2. 检查 frame_index、图片名、meta图片索引
+            for ep in episode_dirs:
+                meta_path = Path(ep) / "meta.jsonl"
+                if not meta_path.exists():
+                    continue
+                with open(meta_path, 'r') as f:
+                    lines = [json.loads(line) for line in f]
+                images_dir = Path(ep) / "images"
+                for i, line in enumerate(lines):
+                    # 检查 frame_index
+                    if 'frame_index' in line and line['frame_index'] != i:
+                        report.append(f"{ep.name}: meta frame_index {line['frame_index']} != {i}")
+                    # 检查图片名
+                    if images_dir.exists():
+                        for cam_dir in images_dir.iterdir():
+                            if cam_dir.is_dir():
+                                img_path = cam_dir / f"frame_{i:06d}.png"
+                                if not img_path.exists():
+                                    report.append(f"{ep.name}: {cam_dir.name} 缺少图片 frame_{i:06d}.png")
+                    # 检查 meta 里的图片索引字段
+                    def recursive_check_img(obj):
+                        if isinstance(obj, dict):
+                            for v in obj.values():
+                                recursive_check_img(v)
+                        elif isinstance(obj, list):
+                            for v in obj:
+                                recursive_check_img(v)
+                        elif isinstance(obj, str):
+                            m = re.findall(r"frame_(\d{6})\.png", obj)
+                            for frame_str in m:
+                                frame_idx = int(frame_str)
+                                if images_dir.exists():
+                                    found = False
+                                    for cam_dir in images_dir.iterdir():
+                                        if cam_dir.is_dir():
+                                            img_path = cam_dir / f"frame_{frame_idx:06d}.png"
+                                            if img_path.exists():
+                                                found = True
+                                                break
+                                    if not found:
+                                        report.append(f"{ep.name}: meta图片索引 {obj} 不存在实际图片")
+                    recursive_check_img(line)
+            if not report:
+                st.success("所有检查均通过，无异常！")
+            else:
+                st.error("发现以下异常：")
+                for r in report:
+                    st.write(r)
 
 # streamlit run tools/edit_sim_recorded_dataset_gui.py
 if __name__ == '__main__':
