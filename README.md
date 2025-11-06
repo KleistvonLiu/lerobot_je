@@ -413,3 +413,8 @@ primaryClass={cs.RO}
 
 pip install streamlit
 streamlit run tools/edit_sim_recorded_dataset_gui.py
+
+python -m lerobot.scripts.visualize_dataset \
+    --repo-id lerobot/test \
+    --root /home/agx/jedata/wrapper \
+    --episode-index 0
