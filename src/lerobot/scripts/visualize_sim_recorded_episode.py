@@ -25,13 +25,17 @@ def visualize_sim_recorded_episode(
     ws_port=9087,
     save=False,
     output_dir=None,
+    show_depth=True,
 ):
     episode_dir = Path(episode_dir)
     # manager_node / je_to_lerobot 使用的文件名是 meta.jsonl
     meta_path = episode_dir / "meta.jsonl"
     images_root = episode_dir / "images"
     # 自动检测所有相机目录（兼容多种命名），并处理可能的多层嵌套目录结构
-    camera_names = [d.name for d in images_root.iterdir() if d.is_dir()]
+    if show_depth:
+        camera_names = [d.name for d in images_root.iterdir() if d.is_dir()]
+    else:
+        camera_names = [d.name for d in images_root.iterdir() if d.is_dir() and "depth" not in d.name.lower()]
     cam_dirs = {}
     for cam in camera_names:
         cam_root = images_root / cam
@@ -120,6 +124,7 @@ if __name__ == "__main__":
     parser.add_argument("--ws-port", type=int, default=9087)
     parser.add_argument("--save", type=int, default=0)
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--show-depth", type=int, default=0, help="是否显示名称中包含 'depth' 的相机（1 显示，0 不显示）")
     args = parser.parse_args()
     visualize_sim_recorded_episode(
         episode_dir=args.episode_dir,
@@ -129,4 +134,5 @@ if __name__ == "__main__":
         ws_port=args.ws_port,
         save=bool(args.save),
         output_dir=args.output_dir,
+        show_depth=bool(args.show_depth),
     )
