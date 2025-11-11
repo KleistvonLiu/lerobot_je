@@ -343,7 +343,7 @@ class AlohaAgileXFollower(Robot):
                              int(action[3]), int(action[4]), int(action[5]))
         # time_point3 = time.perf_counter()
         self.piper.GripperCtrl(abs(int(action[6])), 1000, 0x01, 0)
-        print("here")
+        # print("here")
         # time_point4 = time.perf_counter()
         # logging.info(
         #     f"time cost {1e3 * (time_point1 - start_episode_t):.3f}/{1e3 * (time_point2 - start_episode_t):.3f}/"
