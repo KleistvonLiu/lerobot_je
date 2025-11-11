@@ -41,6 +41,10 @@ from typing import Any
 
 import numpy as np
 import rerun as rr
+import os
+import shutil
+import json
+import re
 
 from lerobot.cameras import (  # noqa: F401
     CameraConfig,  # noqa: F401
@@ -48,8 +52,7 @@ from lerobot.cameras import (  # noqa: F401
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
 from lerobot.cameras.orbbec.configuration_orbbec import OrbbecCameraConfig  # noqa: F401
 from lerobot.tactile.serial.serial_tactile_config import SerialTactileConfig  # noqa: F401
-from lerobot.datasets.image_writer import safe_stop_image_writer
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.image_writer import safe_stop_image_writer, AsyncImageWriter
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.policies.factory import make_policy
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -167,9 +170,9 @@ def record_loop(
     robot1: Robot,
     events: dict,
     fps: int,
-    dataset: LeRobotDataset | None = None,
+    dataset=None,
     policy: PreTrainedPolicy | None = None,
-    control_time_s: int | None = None,
+    control_time_s: float | None = None,
     single_task: str | None = None,
     display_data: bool = False,
     action_features: dict[str, Any] | None = None,
@@ -183,12 +186,19 @@ def record_loop(
 
     timestamp = 0
     start_episode_t = time.perf_counter()
+    # normalize control time to a float for comparisons
+    if control_time_s is None:
+        control_time = 0.0
+    else:
+        control_time = float(control_time_s)
     # count = 0
-    while timestamp < control_time_s:
+    while timestamp < control_time:
         start_loop_t = time.perf_counter()
 
         observation1 = robot1.get_observation()
         observation = {**observation1}
+        # ensure observation_frame is always defined for type-checkers
+        observation_frame = {}
         # if count % 10 == 0:
         #     print(f"get observation count:{count}")  # 打印消息
         # count += 1
@@ -196,19 +206,27 @@ def record_loop(
         # append_depth_arrays_to_txt(observation1, "./raw_depth_data.txt")
         # append_depth_arrays_to_txt_v2(observation1, dataset.root+"/lerobot/raw_depth_data.txt")
         ###############################################################
-        if policy is not None or dataset is not None:
-            observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
+        if policy is not None:
+            # build observation frame only when policy is present; use dataset features if available
+            features = getattr(dataset, "features", None)
+            if features is not None:
+                observation_frame = build_dataset_frame(features, observation, prefix="observation")
 
         if policy is not None:
             action_values = predict_action(
                 observation_frame,
                 policy,
-                get_safe_torch_device(policy.config.device),
+                get_safe_torch_device(policy.config.device or "cpu"),
                 policy.config.use_amp,
                 task=single_task,
                 robot_type=robot1.robot_type,
             )
-            action = {key: action_values[i].item() for i, key in enumerate(action_features)}
+            # action_features may be a dict; iterate over keys deterministically
+            if action_features:
+                keys = list(action_features.keys())
+                action = {key: action_values[i].item() for i, key in enumerate(keys)}
+            else:
+                action = {f"a{i}": float(action_values[i].item()) for i in range(len(action_values))}
         else:
             action = {**robot1.get_leader_action()}
 
@@ -216,11 +234,224 @@ def record_loop(
         # so action actually sent is saved in the dataset.
         sent_action = action
 
-        if dataset is not None:
-            action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
-            # action_frame = None
-            frame = {**observation_frame, **action_frame}
-            dataset.add_frame(frame, task=single_task)
+        # Manager-style immediate save: images + meta.jsonl (joints included, tactiles omitted)
+        try:
+            ep_dir = events.get("episode_dir") if events is not None else None
+            if ep_dir:
+                # frame index counter stored in events
+                fi = int(events.get("frame_index", 0))
+                # Defensive: if frame index appears to go backwards within the same episode,
+                # treat it as a transient/reset and continue monotonically to avoid duplicate
+                # frame indices in the same episode. We keep a per-episode last-frame marker.
+                last_fi = int(events.get("_last_frame_index", -1))
+                last_ep = events.get("_last_frame_episode_idx")
+                cur_ep = int(events.get("episode_idx", -1))
+                if last_ep == cur_ep and fi <= last_fi:
+                    logging.warning(
+                        "Detected frame_index decrease for episode %s: got %s <= last %s. Forcing monotonic increment.",
+                        cur_ep,
+                        fi,
+                        last_fi,
+                    )
+                    fi = last_fi + 1
+                # camera names and dirs provided by caller
+                cam_names = events.get("cam_names", [])
+                cam_dirs = events.get("cam_dirs", [])
+                image_fields = {}
+                # save images using provided image_writer if available
+                writer = events.get("image_writer")
+                for i, cam_key in enumerate(cam_names):
+                    img = observation1.get(cam_key) if isinstance(observation1, dict) else None
+                    if img is None:
+                        continue
+                    img_dir = cam_dirs[i] if i < len(cam_dirs) else os.path.join(ep_dir, "images", cam_key)
+                    os.makedirs(img_dir, exist_ok=True)
+                    fn = f"frame_{fi:06d}.png"
+                    fp = os.path.join(img_dir, fn)
+                    try:
+                        if writer is not None and hasattr(writer, "save_image"):
+                            writer.save_image(img, fp)
+                        else:
+                            # fallback: save via PIL
+                            from PIL import Image
+                            if isinstance(img, np.ndarray):
+                                im = Image.fromarray(img)
+                                im.save(fp)
+                            else:
+                                # try to convert
+                                Image.fromarray(np.array(img)).save(fp)
+                    except Exception:
+                        # don't let image save break recording
+                        logging.exception("Failed to save image %s", fp)
+                    rel = os.path.relpath(fp, ep_dir)
+                    image_fields[cam_key] = rel
+
+                # joints: try to extract name/position/velocity/effort from observation1 or robot1
+                joints_meta = []
+                # First try structured joint info if present
+                js = None
+                if isinstance(observation1, dict):
+                    for key in ("joint_state", "joints", "joint"):
+                        if key in observation1:
+                            js = observation1[key]
+                            break
+
+                names: list[str] = []
+                pos: list[Any] = []
+                vel: list[Any] = []
+                eff: list[Any] = []
+
+                if js is None and isinstance(observation1, dict):
+                    # collect flat keys for pos/vel/eff and map by base name
+                    try:
+                        prefix = f"{robot1.id}."
+                    except Exception:
+                        prefix = None
+
+                    def _strip_prefix_suffix(k: str, suffix: str) -> str:
+                        nk = k
+                        if prefix and nk.startswith(prefix):
+                            nk = nk[len(prefix) :]
+                        if nk.endswith(suffix):
+                            nk = nk[: -len(suffix)]
+                        return nk
+
+                    pos_map: dict[str, Any] = {}
+                    vel_map: dict[str, Any] = {}
+                    eff_map: dict[str, Any] = {}
+
+                    for k in observation1.keys():
+                        if not isinstance(k, str):
+                            continue
+                        try:
+                            if k.endswith(".pos") and "joint" in k:
+                                base = _strip_prefix_suffix(k, ".pos")
+                                v = observation1.get(k)
+                                pos_map[base] = None if v is None else (float(v) if not isinstance(v, (list, tuple)) else v)
+                            elif (k.endswith(".vel") or k.endswith(".velocity")) and "joint" in k:
+                                base = _strip_prefix_suffix(k, ".vel") if k.endswith(".vel") else _strip_prefix_suffix(k, ".velocity")
+                                v = observation1.get(k)
+                                vel_map[base] = None if v is None else float(v)
+                            elif (k.endswith(".effort") or k.endswith(".torque")) and "joint" in k:
+                                base = _strip_prefix_suffix(k, ".effort") if k.endswith(".effort") else _strip_prefix_suffix(k, ".torque")
+                                v = observation1.get(k)
+                                eff_map[base] = None if v is None else float(v)
+                        except Exception:
+                            # ignore conversion errors per-key
+                            try:
+                                if k.endswith(".pos") and "joint" in k:
+                                    pos_map[_strip_prefix_suffix(k, ".pos")] = None
+                                elif (k.endswith(".vel") or k.endswith(".velocity")) and "joint" in k:
+                                    vel_map[_strip_prefix_suffix(k, ".vel") if k.endswith(".vel") else _strip_prefix_suffix(k, ".velocity")] = None
+                                elif (k.endswith(".effort") or k.endswith(".torque")) and "joint" in k:
+                                    eff_map[_strip_prefix_suffix(k, ".effort") if k.endswith(".effort") else _strip_prefix_suffix(k, ".torque")] = None
+                            except Exception:
+                                pass
+
+                    all_bases = sorted(set(list(pos_map.keys()) + list(vel_map.keys()) + list(eff_map.keys())))
+                    for base in all_bases:
+                        names.append(base)
+                        pos.append(pos_map.get(base))
+                        vel.append(vel_map.get(base))
+                        eff.append(eff_map.get(base))
+
+                # If we found structured js (with name/position), use it; else use detected arrays
+                if js is not None:
+                    try:
+                        names = list(getattr(js, "name", js.get("name", []))) if isinstance(js, dict) or hasattr(js, "get") else list(js.name)
+                    except Exception:
+                        names = []
+                    try:
+                        pos = [float(x) for x in (getattr(js, "position", js.get("position", [])) if isinstance(js, dict) or hasattr(js, "get") else list(js.position))]
+                    except Exception:
+                        pos = []
+                    try:
+                        vel = [float(x) for x in (getattr(js, "velocity", js.get("velocity", [])) if isinstance(js, dict) or hasattr(js, "get") else list(js.velocity))]
+                    except Exception:
+                        vel = []
+                    try:
+                        eff = [float(x) for x in (getattr(js, "effort", js.get("effort", [])) if isinstance(js, dict) or hasattr(js, "get") else list(js.effort))]
+                    except Exception:
+                        eff = []
+
+                if names or pos or vel or eff:
+                    # Ensure lists are aligned with names length and effort is always a float list (defaults to 0.0)
+                    n = len(names) if names else max(len(pos) if pos else 0, len(vel) if vel else 0, len(eff) if eff else 0)
+                    # normalize pos/vel/eff lengths and replace None with 0.0 for effort
+                    def _normalize_list(lst, length, default=None):
+                        if lst is None:
+                            return [default] * length
+                        out = list(lst)
+                        # extend or truncate
+                        if len(out) < length:
+                            out.extend([default] * (length - len(out)))
+                        elif len(out) > length:
+                            out = out[:length]
+                        return out
+
+                    pos = _normalize_list(pos, n, None)
+                    vel = _normalize_list(vel, n, None)
+                    eff = _normalize_list(eff, n, 0.0)
+                    # replace any remaining None in eff with 0.0
+                    eff = [float(x) if x is not None else 0.0 for x in eff]
+
+                    joint_entry: dict[str, Any] = dict(
+                        topic=getattr(robot1, "joint_topic", "/robot/joint_states"),
+                        stamp_ns=int(time.time() * 1e9),
+                        name=names if names else [f"joint{i}" for i in range(n)],
+                        position=pos,
+                        velocity=vel if any(x is not None for x in vel) else [],
+                        effort=eff,
+                    )
+                    # If velocity list is all None, present it as empty to avoid misleading data.
+                    if joint_entry.get("velocity") == []:
+                        joint_entry.pop("velocity", None)
+                    joints_meta.append(joint_entry)
+
+                # assemble meta line and append to meta.jsonl; compute a monotonic-derived epoch timestamp
+                try:
+                    base_wall = float(events.get("_time_base_wall", time.time()))
+                    base_perf = float(events.get("_time_base_perf", time.perf_counter()))
+                except Exception:
+                    base_wall = time.time()
+                    base_perf = time.perf_counter()
+                perf_now = time.perf_counter()
+                timestamp_epoch = base_wall + (perf_now - base_perf)
+
+                # Small debug log for the first few frames to diagnose timing/joint issues
+                try:
+                    if int(fi) < 3:
+                        logging.info(
+                            "record debug frame=%s perf_now=%0.6f time_now=%0.6f perf_epoch=%0.6f keys=%s",
+                            fi,
+                            perf_now,
+                            time.time(),
+                            timestamp_epoch,
+                            list(observation1.keys()) if isinstance(observation1, dict) else [],
+                        )
+                except Exception:
+                    pass
+
+                meta = dict(
+                    episode_idx=int(events.get("episode_idx", 0)),
+                    frame_index=int(fi),
+                    timestamp=timestamp_epoch,
+                    **image_fields,
+                    joints=joints_meta,
+                )
+                # append to meta.jsonl
+                meta_path = os.path.join(ep_dir, "meta.jsonl")
+                try:
+                    with open(meta_path, "a", encoding="utf-8") as mf:
+                        mf.write(json.dumps(meta, ensure_ascii=False) + "\n")
+                except Exception:
+                    logging.exception("Failed to append meta to %s", meta_path)
+                # increment frame counter and update last seen
+                events["frame_index"] = fi + 1
+                events["_last_frame_index"] = fi
+                events["_last_frame_episode_idx"] = int(events.get("episode_idx", -1))
+        except Exception:
+            logging.exception("manager-style save failed")
 
         if display_data:
             for obs, val in observation.items():
@@ -269,7 +500,7 @@ def teleoperate_loop(
             break
 
 @parser.wrap()
-def record(cfg: RecordConfig) -> LeRobotDataset:
+def record(cfg: RecordConfig) -> None:
     init_logging()
     logging.info(pformat(asdict(cfg)))
     if cfg.display_data:
@@ -281,44 +512,33 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     action_features = hw_to_dataset_features(merged_action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(merged_observation_features, "observation", cfg.dataset.video)
     dataset_features = {**action_features, **obs_features}
+    # We will not use LeRobotDataset saving logic here. Create a minimal ds_meta for policy if needed.
+    sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
+    ds_meta = {"features": dataset_features, "num_episodes": 0}
 
-    if cfg.resume:
-        dataset = LeRobotDataset(
-            cfg.dataset.repo_id,
-            root=cfg.dataset.root,
-        )
-
-        if hasattr(robot1, "cameras") and len(robot1.cameras) > 0:
-            dataset.start_image_writer(
-                num_processes=cfg.dataset.num_image_writer_processes,
-                num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot1.cameras),
-            )
-        sanity_check_dataset_robot_compatibility(dataset, robot1, cfg.dataset.fps, dataset_features)
-    else:
-        # Create empty dataset or load existing saved episodes
-        sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
-        dataset = LeRobotDataset.create(
-            cfg.dataset.repo_id,
-            cfg.dataset.fps,
-            root=cfg.dataset.root,
-            robot_type=robot1.name,
-            features=dataset_features,
-            use_videos=cfg.dataset.video,
-            image_writer_processes=cfg.dataset.num_image_writer_processes,
-            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot1.cameras),
-        )
-
-    # Load pretrained policy
-    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+    # Load pretrained policy (we pass None for ds_meta when not available)
+    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=None)
 
     robot1.connect()
 
-    # Batched encoding variables
-    use_batched_encoding = cfg.dataset.video_encoding_batch_size > 1
-    episodes_since_last_encoding = 0
-    last_encoded_episode = dataset.num_episodes - 1  # Start from current episode count
+    # We do not use LeRobotDataset saving/encoding. We'll manage per-episode immediate saves.
 
     listener, events = init_keyboard_listener()
+
+    # Setup an async image writer for manager-style immediate saves
+    cams = getattr(robot1, "cameras", None)
+    n_cams = len(cams) if cams else 0
+    image_writer = None
+    if n_cams > 0:
+        try:
+            image_writer = AsyncImageWriter(num_processes=cfg.dataset.num_image_writer_processes,
+                                            num_threads=cfg.dataset.num_image_writer_threads_per_camera * max(1, n_cams))
+        except Exception:
+            logging.exception("Failed to start AsyncImageWriter")
+    events["image_writer"] = image_writer
+
+    def _sanitize_name(name: str) -> str:
+        return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(name).strip('/'))
 
     log_say("Starting preparing teleoperation")
     teleoperate_loop(
@@ -327,26 +547,121 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         fps=cfg.dataset.fps,
         # control_time_s=cfg.dataset.episode_time_s,
     )
+    # Use a while loop so we can repeat the same episode index when rerecord is requested.
+    # Inspect the target root for existing episode directories and continue after the last one.
+    try:
+        root_for_listing = str(cfg.dataset.root) if cfg.dataset.root is not None else os.getcwd()
+        existing_idxs: list[int] = []
+        for name in os.listdir(root_for_listing):
+            m = re.match(r"^episode_(\d+)$", name)
+            if m:
+                try:
+                    existing_idxs.append(int(m.group(1)))
+                except Exception:
+                    pass
+        if existing_idxs:
+            ep_index = max(existing_idxs) + 1
+            logging.info("Detected %s existing episodes, will continue from episode %s", len(existing_idxs), ep_index)
+        else:
+            ep_index = 0
+    except Exception:
+        logging.exception("Failed to list existing episodes in dataset root; starting at 0")
+        ep_index = 0
+    while ep_index < cfg.dataset.num_episodes:
+        log_say(f"Recording episode {ep_index}", cfg.play_sounds)
+        # Prepare per-episode directories and event state used by record_loop
+        root = str(cfg.dataset.root) if cfg.dataset.root is not None else os.getcwd()
+        ep_dir = os.path.join(root, f"episode_{ep_index:06d}")
+        os.makedirs(ep_dir, exist_ok=True)
+        cam_names = list(cams.keys()) if cams else []
+        cam_dirs = [os.path.join(ep_dir, "images", _sanitize_name(c)) for c in cam_names]
+        for d in cam_dirs:
+            os.makedirs(d, exist_ok=True)
+        events["episode_dir"] = ep_dir
+        events["cam_names"] = cam_names
+        events["cam_dirs"] = cam_dirs
+        events["frame_index"] = 0
+        events["episode_idx"] = ep_index
+        # establish a monotonic -> epoch time base for precise timestamps
+        events["_time_base_wall"] = time.time()
+        events["_time_base_perf"] = time.perf_counter()
 
-    for recorded_episodes in range(cfg.dataset.num_episodes):
-        log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+        # Record the episode
         record_loop(
             robot1=robot1,
             events=events,
             fps=cfg.dataset.fps,
             policy=policy,
-            dataset=dataset,
+            dataset=None,
             control_time_s=cfg.dataset.episode_time_s,
             single_task=cfg.dataset.single_task,
             display_data=cfg.display_data,
+            action_features=action_features,
         )
+        # After recording, handle finalize/proceed or rerecord (left arrow), do a reset period, or advance
+        # If user requested finalization (first right-arrow press), wait for all pending writes,
+        # print a green confirmation log, then wait for the user to press right-arrow again to proceed.
+        if events.get("finalize_requested"):
+            log_say("Finalizing episode - waiting for pending writes", cfg.play_sounds)
+            writer = events.get("image_writer")
+            try:
+                if writer is not None and hasattr(writer, "wait_until_done"):
+                    writer.wait_until_done()
+            except Exception:
+                logging.exception("Error while waiting for image writer to finish during finalize")
+
+            # Print a green confirmation to indicate all files were saved
+            try:
+                print("\033[92mAll files saved for episode %s\033[0m" % ep_index)
+            except Exception:
+                logging.info("All files saved for episode %s", ep_index)
+
+            # clear finalize flag and set awaiting_next so next right-arrow press proceeds
+            events["finalize_requested"] = False
+            events["awaiting_next"] = True
+
+            # Wait until user explicitly proceeds (right-arrow) OR requests rerecord/stop
+            while True:
+                if events.get("proceed_episode"):
+                    events["proceed_episode"] = False
+                    events["awaiting_next"] = False
+                    break
+                if events.get("rerecord_episode"):
+                    # allow rerecord to short-circuit waiting
+                    events["awaiting_next"] = False
+                    break
+                if events.get("stop_recording"):
+                    events["awaiting_next"] = False
+                    break
+                busy_wait(0.05)
+
+        if events.get("rerecord_episode"):
+            log_say("Re-record episode", cfg.play_sounds)
+            # Clear the flag and remove files for this episode so re-record overwrites them
+            events["rerecord_episode"] = False
+            events["exit_early"] = False
+            try:
+                # Ensure any pending image writes are finished before removing files
+                writer = events.get("image_writer")
+                try:
+                    if writer is not None and hasattr(writer, "wait_until_done"):
+                        writer.wait_until_done()
+                except Exception:
+                    logging.exception("Failed while waiting for image writer to finish before rerecord")
+
+                if os.path.exists(ep_dir):
+                    shutil.rmtree(ep_dir)
+            except Exception:
+                logging.exception("Failed to remove episode directory for rerecord: %s", ep_dir)
+            # do not increment ep_index -> loop will re-create ep_dir and record again
+            continue
 
         # Execute a few seconds without recording to give time to manually reset the environment
         # Skip reset for the last episode to be recorded
-        if not events["stop_recording"] and (
-            (recorded_episodes < cfg.dataset.num_episodes - 1) or events["rerecord_episode"]
-        ):
+        if not events.get("stop_recording") and (ep_index < cfg.dataset.num_episodes - 1):
             log_say("Reset the environment", cfg.play_sounds)
+            # disable manager-style per-frame saving during reset
+            events["episode_dir"] = None
             record_loop(
                 robot1=robot1,
                 events=events,
@@ -356,35 +671,13 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 display_data=cfg.display_data,
             )
 
-        if events["rerecord_episode"]:
-            log_say("Re-record episode", cfg.play_sounds)
-            events["rerecord_episode"] = False
-            events["exit_early"] = False
-            dataset.clear_episode_buffer()
-            continue
-
         robot1.disconnect_port()
+        # Manager-style immediate saves already persisted data to disk.
 
-        # dataset.save_episode()
-        # Save episode with or without video encoding based on batch size
-        if use_batched_encoding:
-            dataset.save_episode(encode_videos=False)
-            episodes_since_last_encoding += 1
-
-            # Batch encode videos when we reach the batch size or when stopping
-            if episodes_since_last_encoding >= cfg.dataset.video_encoding_batch_size or events["stop_recording"]:
-                log_say(f"Batch encoding videos for {episodes_since_last_encoding} episodes, from episode {last_encoded_episode + 1} to episode {dataset.num_episodes - 1}", cfg.play_sounds)
-                start_ep = last_encoded_episode + 1
-                end_ep = dataset.num_episodes
-                dataset.batch_encode_videos(start_ep, end_ep)
-                last_encoded_episode = end_ep - 1
-                episodes_since_last_encoding = 0
-        else:
-            # Original behavior: encode videos immediately
-            dataset.save_episode(encode_videos=True)
-
-        if events["stop_recording"]:
+        if events.get("stop_recording"):
             break
+
+        ep_index += 1
 
     log_say("Stop recording", cfg.play_sounds, blocking=True)
 
@@ -393,13 +686,18 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     if not is_headless() and listener is not None:
         listener.stop()
 
-    if cfg.dataset.push_to_hub:
-        dataset.push_to_hub(tags=cfg.dataset.tags, private=cfg.dataset.private)
+    # Stop image writer if created
+    try:
+        if image_writer is not None:
+            image_writer.stop()
+    except Exception:
+        logging.exception("Failed to stop image writer")
 
     log_say("Exiting", cfg.play_sounds)
-    return dataset
+    return None
 
 
 if __name__ == "__main__":
     print("start")
-    record()
+    # parser.wrap will supply the `cfg` when invoked from CLI; ignore static type check here
+    record()  # type: ignore[arg-type]

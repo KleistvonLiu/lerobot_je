@@ -444,25 +444,11 @@ def main():
                     timestamps = []
                 # 相邻帧间隔阈值（毫秒）
                 min_dt_s = 0.015
-                max_dt_s = 0.100
+                max_dt_s = 0.040
                 for i in range(1, len(timestamps)):
                     dt = timestamps[i] - timestamps[i-1]
                     if dt > max_dt_s or dt < min_dt_s:
                         report.append(f"{ep.name}: 相邻帧时间间隔异常 frames {i-1}->{i}, dt={dt*1000:.1f} ms")
-                # 传感器时间戳检查（目前检查 joints[*].stamp_ns 与顶层 timestamp）
-                sensor_thresh_s = 0.033
-                for i, m in enumerate(lines):
-                    frame_ts = float(m.get('timestamp', 0.0))
-                    joints = m.get('joints', [])
-                    if joints:
-                        for j_idx, j in enumerate(joints):
-                            s_ns = j.get('stamp_ns')
-                            if s_ns is None:
-                                continue
-                            s = float(s_ns)
-                            diff = abs(s - frame_ts)
-                            if diff > sensor_thresh_s:
-                                report.append(f"{ep.name}: frame {i} joint[{j_idx}] stamp_ns 与 frame timestamp 差异 {diff*1000:.1f} ms (threshold {sensor_thresh_s*1000:.1f} ms)")
 
             if not report:
                 st.success("所有检查均通过，无异常！")

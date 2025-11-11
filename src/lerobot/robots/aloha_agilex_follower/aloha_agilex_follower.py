@@ -58,7 +58,13 @@ class AlohaAgileXFollower(Robot):
 
     @property
     def _motors_ft(self) -> dict[str, type]:
-        return {self.id + f".joint{i}.pos": float for i in range(7)}
+        # expose position, velocity and effort keys for each joint so recorder can pick them up
+        out: dict[str, type] = {}
+        for i in range(7):
+            out[self.id + f".joint{i}.pos"] = float
+            out[self.id + f".joint{i}.vel"] = float
+            out[self.id + f".joint{i}.effort"] = float
+        return out
 
     @property
     def _cameras_ft(self) -> dict[str, tuple[int, int, int]]:
@@ -137,16 +143,68 @@ class AlohaAgileXFollower(Robot):
             self.piper.ConnectPort()
             self.is_piper_port_connected_ = True
 
-        # Read arm position
+        # Read arm joint states (position, velocity, effort when available)
         start = time.perf_counter()
-        obs_dict = {
-            self.id + f".joint{i}.pos":
-                (getattr(self.piper.GetArmJointMsgs().joint_state, f"joint_{i + 1}"))
-            for i in range(6)  # 从 0 到 5
-        }
-        obs_dict[self.id + ".joint6.pos"] = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle
+        obs_dict: dict[str, Any] = {}
+
+        joint_state = self.piper.GetArmJointMsgs().joint_state
+        highspd = self.piper.GetArmHighSpdInfoMsgs()
+        gripper = self.piper.GetArmGripperMsgs().gripper_state
+
+        # joints 0..5
+        for i in range(6):
+            # position from joint_state
+            pos_val = None
+            try:
+                jattr = getattr(joint_state, f"joint_{i + 1}")
+            except Exception:
+                jattr = None
+            try:
+                if jattr is None:
+                    pos_val = None
+                elif isinstance(jattr, (int, float)):
+                    pos_val = float(jattr)
+                else:
+                    # try common attribute names
+                    if hasattr(jattr, "position"):
+                        pos_val = float(jattr.position)
+                    elif hasattr(jattr, "angle"):
+                        pos_val = float(jmsg.angle) if (jmsg := getattr(jattr, 'angle', None)) is not None else None
+                    elif hasattr(jattr, "pos"):
+                        pos_val = float(jattr.pos)
+            except Exception:
+                pos_val = None
+
+            # velocity from highspd.motor_X.motor_speed if available
+            vel_val = None
+            try:
+                motor = getattr(highspd, f"motor_{i + 1}", None)
+                if motor is not None:
+                    vel_val = float(getattr(motor, "motor_speed", motor))
+            except Exception:
+                vel_val = None
+
+            # per-joint effort not provided by this interface; default to None
+            eff_val = None
+
+            obs_dict[self.id + f".joint{i}.pos"] = pos_val
+            obs_dict[self.id + f".joint{i}.vel"] = vel_val
+            obs_dict[self.id + f".joint{i}.effort"] = eff_val
+
+        # gripper as joint6
+        try:
+            obs_dict[self.id + ".joint6.pos"] = float(gripper.grippers_angle)
+        except Exception:
+            obs_dict[self.id + ".joint6.pos"] = None
+        try:
+            obs_dict[self.id + ".joint6.effort"] = float(gripper.grippers_effort)
+        except Exception:
+            obs_dict[self.id + ".joint6.effort"] = None
+        # velocity for gripper not available; set to 0
+        obs_dict[self.id + ".joint6.vel"] = 0.0
+
         dt_ms = (time.perf_counter() - start) * 1e3
-        logger.debug(f"{self} read state: {dt_ms:.3f}ms,{obs_dict.values()}")
+        logger.debug(f"{self} read state: {dt_ms:.3f}ms,{list(obs_dict.values())}")
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
