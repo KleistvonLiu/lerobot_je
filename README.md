@@ -412,7 +412,7 @@ primaryClass={cs.RO}
 
 每次重启后只需要做一遍：
 cd ~/jemotor/lerobot_je
-sudo ./can_config_new.sh
+sudo ./can_config_modified.sh --right 1-6:1.0 --left 1-5:1.0 --rate-right 1000000 --rate-left 1000000
 sudo密码是 jemotor2025
 
 python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_follower    --robot1.port=can_right    \
