@@ -459,7 +459,7 @@ def main():
                             s_ns = j.get('stamp_ns')
                             if s_ns is None:
                                 continue
-                            s = float(s_ns) / 1e9
+                            s = float(s_ns)
                             diff = abs(s - frame_ts)
                             if diff > sensor_thresh_s:
                                 report.append(f"{ep.name}: frame {i} joint[{j_idx}] stamp_ns 与 frame timestamp 差异 {diff*1000:.1f} ms (threshold {sensor_thresh_s*1000:.1f} ms)")
