@@ -419,7 +419,9 @@ python -m lerobot.scripts.visualize_dataset \
     --episode-index 0
 
 
-python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_follower    --robot1.port=can_right            --robot1.id=right            --teleop.type=aloha_agilex_leader            --teleop.port=/dev/tty.usbmodem58760431551            --teleop.id=blue        --robot1.cameras="{camera0: {type: orbbec, index_or_path: CP02653000ZL, width: 640, height: 480, fps: 30},camera1: {type: orbbec, index_or_path: CP02653000YJ, width: 640, height: 480, fps: 30}, camera2: {type: orbbec, index_or_path: CP02653000YR, width: 640, height: 480, fps: 30}, camera3: {type: orbbec, index_or_path: CP02653000R4, width: 640, height: 480, fps: 30}}"        --dataset.single_task="Pick up the PCB board from the green conveyor belt and place it into the yellow container." --dataset.root="/home/test/jemotor/jedata/temp/" --dataset.repo_id="lerobot/test" --dataset.episode_time=600
+python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_follower    --robot1.port=can_right            --robot1.id=right            --teleop.type=aloha_agilex_leader            --teleop.port=/dev/tty.usbmodem58760431551            --teleop.id=blue        --robot1.cameras="{camera0: {type: orbbec, index_or_path: CP02653000ZL, width: 640, height: 480, fps: 30},camera1: {type: orbbec, index_or_path: CP02653000YJ, width: 640, height: 480, fps: 30}, camera2: {type: orbbec, index_or_path: CP02653000YR, width: 640, height: 480, fps: 30}, camera3: {type: orbbec, index_or_path: CP02653000R4, width: 640, height: 480, fps: 30}}"        --dataset.single_task="Pick up the PCB board from the green conveyor belt and place it into the yellow container." --dataset.root="/home/test/jemotor/jedata/test_1112/" --dataset.repo_id="lerobot/test" --dataset.episode_time=600
+
+
 每次重启后只需要做一遍：
 cd ~/jemotor/lerobot_je
 sudo ./can_config_modified.sh --right 1-6:1.0 --left 1-5:1.0 --rate-right 1000000 --rate-left 1000000

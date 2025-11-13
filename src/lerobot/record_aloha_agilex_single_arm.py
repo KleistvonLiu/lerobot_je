@@ -37,7 +37,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from pprint import pformat
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import rerun as rr
@@ -106,7 +106,10 @@ class DatasetRecordConfig:
     # Number of seconds for resetting the environment after each episode.
     reset_time_s: int | float = 1
     # Number of episodes to record.
-    num_episodes: int = 50
+    num_episodes: int = 150
+    # Optional: start recording at this episode index. If None, continue after existing episodes.
+    # If set and the target episode directory already exists, the recorder will raise an error.
+    start_index: int | None = None
     # Encode frames in the dataset into video
     video: bool = True
     # Upload dataset to Hugging Face hub.
@@ -260,31 +263,55 @@ def record_loop(
                 image_fields = {}
                 # save images using provided image_writer if available
                 writer = events.get("image_writer")
+                fn = f"frame_{fi:06d}.png"
+                # Save color image and depth image (if present) for each camera.
                 for i, cam_key in enumerate(cam_names):
+                    # Color image
                     img = observation1.get(cam_key) if isinstance(observation1, dict) else None
-                    if img is None:
-                        continue
-                    img_dir = cam_dirs[i] if i < len(cam_dirs) else os.path.join(ep_dir, "images", cam_key)
-                    os.makedirs(img_dir, exist_ok=True)
-                    fn = f"frame_{fi:06d}.png"
-                    fp = os.path.join(img_dir, fn)
-                    try:
-                        if writer is not None and hasattr(writer, "save_image"):
-                            writer.save_image(img, fp)
-                        else:
-                            # fallback: save via PIL
-                            from PIL import Image
-                            if isinstance(img, np.ndarray):
-                                im = Image.fromarray(img)
-                                im.save(fp)
+                    if img is not None:
+                        img_dir = cam_dirs[i] if i < len(cam_dirs) else os.path.join(ep_dir, "images", cam_key)
+                        os.makedirs(img_dir, exist_ok=True)
+                        fp = os.path.join(img_dir, fn)
+                        try:
+                            if writer is not None and hasattr(writer, "save_image"):
+                                writer.save_image(img, fp)
                             else:
-                                # try to convert
-                                Image.fromarray(np.array(img)).save(fp)
-                    except Exception:
-                        # don't let image save break recording
-                        logging.exception("Failed to save image %s", fp)
-                    rel = os.path.relpath(fp, ep_dir)
-                    image_fields[cam_key] = rel
+                                # fallback: save via PIL
+                                from PIL import Image
+                                if isinstance(img, np.ndarray):
+                                    im = Image.fromarray(img)
+                                    im.save(fp)
+                                else:
+                                    Image.fromarray(np.array(img)).save(fp)
+                        except Exception:
+                            logging.exception("Failed to save image %s", fp)
+                        rel = os.path.relpath(fp, ep_dir)
+                        image_fields[cam_key] = rel
+
+                    # Depth image (key naming convention: '<cam>_depth')
+                    depth_key = cam_key + "_depth"
+                    depth_img = observation1.get(depth_key) if isinstance(observation1, dict) else None
+                    if depth_img is not None:
+                        # place depth images into a sibling directory ending with '_depth'
+                        base_dir = cam_dirs[i] if i < len(cam_dirs) else os.path.join(ep_dir, "images", cam_key)
+                        depth_dir = base_dir + "_depth"
+                        os.makedirs(depth_dir, exist_ok=True)
+                        fpd = os.path.join(depth_dir, fn)
+                        try:
+                            if writer is not None and hasattr(writer, "save_image"):
+                                writer.save_image(depth_img, fpd)
+                            else:
+                                from PIL import Image
+                                if isinstance(depth_img, np.ndarray):
+                                    # PIL can handle uint8/uint16 arrays; try to save directly
+                                    imd = Image.fromarray(depth_img)
+                                    imd.save(fpd)
+                                else:
+                                    Image.fromarray(np.array(depth_img)).save(fpd)
+                        except Exception:
+                            logging.exception("Failed to save depth image %s", fpd)
+                        reld = os.path.relpath(fpd, ep_dir)
+                        image_fields[depth_key] = reld
 
                 # joints: try to extract name/position/velocity/effort from observation1 or robot1
                 joints_meta = []
@@ -551,19 +578,33 @@ def record(cfg: RecordConfig) -> None:
     # Inspect the target root for existing episode directories and continue after the last one.
     try:
         root_for_listing = str(cfg.dataset.root) if cfg.dataset.root is not None else os.getcwd()
-        existing_idxs: list[int] = []
-        for name in os.listdir(root_for_listing):
-            m = re.match(r"^episode_(\d+)$", name)
-            if m:
-                try:
-                    existing_idxs.append(int(m.group(1)))
-                except Exception:
-                    pass
-        if existing_idxs:
-            ep_index = max(existing_idxs) + 1
-            logging.info("Detected %s existing episodes, will continue from episode %s", len(existing_idxs), ep_index)
+        # If user provided a start_index, use it and error if that episode already exists.
+        if getattr(cfg.dataset, "start_index", None) is not None:
+            try:
+                val = cfg.dataset.start_index
+                if val is None:
+                    raise ValueError(f"Invalid start_index: {cfg.dataset.start_index}")
+                ep_index = int(cast(int, val))
+            except Exception:
+                raise ValueError(f"Invalid start_index: {cfg.dataset.start_index}")
+            target_dir = os.path.join(root_for_listing, f"episode_{ep_index:06d}")
+            if os.path.exists(target_dir):
+                raise FileExistsError(f"Target episode directory already exists: {target_dir}")
+            logging.info("Starting recording from forced start_index %s", ep_index)
         else:
-            ep_index = 0
+            existing_idxs: list[int] = []
+            for name in os.listdir(root_for_listing):
+                m = re.match(r"^episode_(\d+)$", name)
+                if m:
+                    try:
+                        existing_idxs.append(int(m.group(1)))
+                    except Exception:
+                        pass
+            if existing_idxs:
+                ep_index = max(existing_idxs) + 1
+                logging.info("Detected %s existing episodes, will continue from episode %s", len(existing_idxs), ep_index)
+            else:
+                ep_index = 0
     except Exception:
         logging.exception("Failed to list existing episodes in dataset root; starting at 0")
         ep_index = 0
