@@ -30,36 +30,61 @@ def convert_expand_to_lerobot_batch(
             features_list = [json.loads(line) for line in f]
         batch_size = len(features_list)
         print(f"[INFO] [{episode_dir.name}] meta.jsonl 读取完成，帧数: {batch_size}")
-        # 自动检测 images 下的相机目录为相机名（兼容 manager_node 产出命名）
+        # 相机列表由 meta.jsonl 中的键决定：以 "cam" 开头的字段被视为相机属性（如 camera_01_color_image_raw）
+        # 不再直接从 images/ 目录枚举相机。保持排序以稳定输出顺序。
+        camera_names = sorted([k for k in (features_list[0].keys() if len(features_list)>0 else []) if str(k).startswith('cam')])
+        print(f"[INFO] 从 meta 字段检测到相机: {camera_names}")
+        # 预备一个可选的回退查找（如果 meta 中没有有效的第一帧路径），使用旧的 images/ 目录结构查找
         images_root = episode_dir / "images"
-        camera_names = [d.name for d in images_root.iterdir() if d.is_dir()]
-        print(f"[INFO] 检测到相机: {camera_names}")
-        # 处理可能的多一层目录结构（例如 images/camera_x/camera_x/frame_000000.png）
         cam_dirs = {}
         for cam in camera_names:
+            # 尝试使用 meta 中第一帧的路径（若提供）作为相机目录/文件基准
+            first_meta_path = None
+            if len(features_list) > 0 and cam in features_list[0]:
+                p = Path(features_list[0][cam])
+                if not p.is_absolute():
+                    p = episode_dir / p
+                if p.exists():
+                    # 如果 meta 给的是具体文件，则使用其父目录作为 cam_dir
+                    first_meta_path = p
+                    cam_dirs[cam] = p.parent
+                    continue
+            # 回退：在 images_root 中查找相应目录（与以前行为一致）
             cam_root = images_root / cam
-            # 直接存在帧文件则使用该目录
-            first_frame = cam_root / f"frame_{0:06d}.png"
-            if first_frame.exists():
-                cam_dirs[cam] = cam_root
-                continue
-            # 否则在子目录中查找第一个包含 frame_*.png 的目录
-            found = None
-            for p in cam_root.iterdir():
-                if p.is_dir() and any(p.glob('frame_*.png')):
-                    found = p
-                    break
-            if found is None:
-                # 最后尝试递归查找任何 frame_*.png 的父目录
-                matches = list(cam_root.rglob('frame_*.png'))
-                if matches:
-                    found = matches[0].parent
-            cam_dirs[cam] = found if found is not None else cam_root
+            if cam_root.exists() and cam_root.is_dir():
+                first_frame = cam_root / f"frame_{0:06d}.png"
+                if first_frame.exists():
+                    cam_dirs[cam] = cam_root
+                    continue
+                found = None
+                for p in cam_root.iterdir():
+                    if p.is_dir() and any(p.glob('frame_*.png')):
+                        found = p
+                        break
+                if found is None:
+                    matches = list(cam_root.rglob('frame_*.png'))
+                    if matches:
+                        found = matches[0].parent
+                cam_dirs[cam] = found if found is not None else cam_root
+            else:
+                # images_root 中无该目录且 meta 也未提供有效路径，标记为 None，后续 per-frame 将使用 meta 的 frame 路径或 None
+                cam_dirs[cam] = None
         # 只读取每个相机的第一帧图片用于推断 shape，无需全部加载
         img_shapes = {}
         for cam in camera_names:
-            cam_dir = cam_dirs[cam]
-            img_path = cam_dir / f"frame_{0:06d}.png"
+            cam_dir = cam_dirs.get(cam)
+            # 优先尝试使用 meta 中第一帧指定的路径（如果存在），否则使用 cam_dir 下的 frame_000000.png
+            img_path = None
+            if len(features_list) > 0 and cam in features_list[0]:
+                p = Path(features_list[0][cam])
+                if not p.is_absolute():
+                    p = episode_dir / p
+                if p.exists():
+                    img_path = p
+            if img_path is None and cam_dir is not None:
+                img_path = cam_dir / f"frame_{0:06d}.png"
+            if img_path is None or not img_path.exists():
+                raise FileNotFoundError(f"无法为相机 {cam} 找到用于推断 shape 的第一帧图片: {img_path}")
             # 使用 PIL 获取尺寸和通道数，但不要把图片读成 numpy.ndarray
             with Image.open(img_path) as im:
                 w, h = im.size
@@ -93,6 +118,8 @@ def convert_expand_to_lerobot_batch(
                 features["observation.state"] = {"dtype": "float32", "shape": [total_joints * 3]}
                 # action 使用所有 joint 的 position 串联
                 features["action"] = {"dtype": "float32", "shape": [total_joints]}
+                # 加一个feature: effort，暂时不去除state里的effort
+                features["effort"] = {"dtype": "float32", "shape": [total_joints]}
             # 如果存在 observation dict，兼容展开其他字段
             if len(features_list) > 0 and "observation" in features_list[0]:
                 obs_flat = flatten_dict(features_list[0]["observation"], parent_key="observation")
@@ -138,10 +165,19 @@ def convert_expand_to_lerobot_batch(
                 "task": task,
             }
             # 相机图片字段（如 camera_01_color_image_raw）
+            # 按要求：每帧直接使用 meta（features_list）中对应相机属性的值作为图片路径，不再假设按 frame 连续
             for cam in camera_names:
-                cam_dir = cam_dirs.get(cam, images_root / cam)
-                img_path = cam_dir / f"frame_{i:06d}.png"
-                meta[cam] = str(img_path)
+                img_path = None
+                # 如果 meta 明确提供了路径，则必须存在，否则立即报错
+                if i < len(features_list) and cam in features_list[i] and features_list[i][cam]:
+                    p = Path(features_list[i][cam])
+                    if not p.is_absolute():
+                        p = episode_dir / p
+                    if not p.exists():
+                        raise FileNotFoundError(f"meta 中为相机 {cam} 指定的图片不存在: episode={episode_index} frame={i} path={p}")
+                    img_path = p
+                # 如果 meta 未提供该字段，保留为 None（或根据需要改为抛错）
+                meta[cam] = str(img_path) if img_path is not None else None
             # joints/tactiles（如有）——将 joints 的 position/velocity/effort 拼接到 observation.state；action 为 position
             joints_list = features_list[i].get("joints", []) if i < len(features_list) else []
             if joints_list:
@@ -160,6 +196,7 @@ def convert_expand_to_lerobot_batch(
                 act = np.array(positions, dtype=np.float32)
                 meta["observation.state"] = obs_state
                 meta["action"] = act
+                meta["effort"] = np.array(efforts, dtype=np.float32)
             # tactiles（如有）
             if "tactiles" in features_list[i]:
                 meta["tactiles"] = features_list[i]["tactiles"]
@@ -222,39 +259,34 @@ def convert_expand_to_lerobot_batch(
         # 只为本批次 episode 建软链接
         for ep_idx in range(start, end):
             ep_dir = [d for d in episode_dirs if int(d.name.split('_')[-1]) == ep_idx][0]
-            images_root = ep_dir / "images"
-            # 获取所有相机目录（不要局限前缀），并处理可能的多层嵌套
-            camera_names = [d.name for d in images_root.iterdir() if d.is_dir()]
-            cam_dirs = {}
-            for cam in camera_names:
-                cam_root = images_root / cam
-                first_frame = cam_root / f"frame_{0:06d}.png"
-                if first_frame.exists():
-                    cam_dirs[cam] = cam_root
-                    continue
-                found = None
-                for p in cam_root.iterdir():
-                    if p.is_dir() and any(p.glob('frame_*.png')):
-                        found = p
-                        break
-                if found is None:
-                    matches = list(cam_root.rglob('frame_*.png'))
-                    if matches:
-                        found = matches[0].parent
-                cam_dirs[cam] = found if found is not None else cam_root
-
-            for cam in camera_names:
-                target_src_dir = cam_dirs.get(cam, images_root / cam)
-                # 将软链接创建到 <lerobot_root>/images/<cam>/episode_xxxxxx（视频编码器期望的目录结构）
+            # 使用 meta.jsonl 中每帧的相机字段路径来创建目标目录下按帧命名的软链接，确保编码器看到连续的 frame_000000.png.. 文件
+            meta_path = ep_dir / "meta.jsonl"
+            with open(meta_path, "r") as f:
+                features_list_ep = [json.loads(line) for line in f]
+            # 从 meta 中读取相机字段名（以 'cam' 开头）以保持一致
+            camera_names_ep = sorted([k for k in (features_list_ep[0].keys() if len(features_list_ep)>0 else []) if str(k).startswith('cam')])
+            for cam in camera_names_ep:
                 target_dir = Path(lerobot_root) / "images" / cam / f"episode_{ep_idx:06d}"
                 target_dir.mkdir(parents=True, exist_ok=True)
-                for img_file in target_src_dir.glob("frame_*.png"):
-                    dst_img = target_dir / img_file.name
-                    if not dst_img.exists():
-                        try:
-                            os.symlink(img_file, dst_img)
-                        except FileExistsError:
-                            pass
+                # 对每一帧，根据 meta 中该相机字段给出的路径创建名为 frame_{i:06d}.png 的软链接
+                for i, frame_meta in enumerate(features_list_ep):
+                    if cam not in frame_meta or not frame_meta[cam]:
+                        # meta 未给出该帧的相机路径，跳过并记录警告
+                        print(f"[WARN] episode {ep_idx} frame {i} missing camera field {cam}, skip symlink")
+                        continue
+                    src_p = Path(frame_meta[cam])
+                    if not src_p.is_absolute():
+                        src_p = ep_dir / src_p
+                    if not src_p.exists():
+                        print(f"[WARN] episode {ep_idx} frame {i} camera {cam} path does not exist: {src_p}")
+                        continue
+                    dst_img = target_dir / f"frame_{i:06d}.png"
+                    if dst_img.exists():
+                        continue
+                    try:
+                        os.symlink(src_p, dst_img)
+                    except FileExistsError:
+                        pass
         # 编码
         dataset.batch_encode_videos(start, end)
         batch_t1 = time.time()
@@ -264,6 +296,6 @@ def convert_expand_to_lerobot_batch(
 if __name__ == "__main__":
     # 示例用法
     lerobot_root = "/home/agx/jedata/wrapper"
-    episodes_root = "/home/agx/jedata/manager_node_temp"  # 传入包含多个episode_xxxxxx的根目录
-    task = "test_task"
+    episodes_root = "/home/agx/jedata/test_1111/"  # 传入包含多个episode_xxxxxx的根目录
+    task = "When the conveyor's red light turns on, pick the PCBs from the conveyor and place them into the yellow container on the table; once the container is full, stop moving the conveyor."
     convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task)
