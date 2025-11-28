@@ -14,6 +14,7 @@ def convert_expand_to_lerobot_batch(
     fps=30,
     use_videos=True,
     batch_encode_num=5,  # 新增参数，控制每次并发编码多少个episode
+    resume = False,
 ):
     t0 = time.time()
     episodes_root = Path(episodes_root)
@@ -21,9 +22,20 @@ def convert_expand_to_lerobot_batch(
     episode_dirs = sorted([d for d in episodes_root.iterdir() if d.is_dir() and d.name.startswith("episode_")])
     print(f"[INFO] 共检测到 {len(episode_dirs)} 个episode: {[d.name for d in episode_dirs]}")
     dataset = None
+    # 用于 resume 时从现有数据集的下一集开始编号
+    next_episode_index = None
+    # 记录新 episode_index 与源 episode 目录的映射，后续编码时使用
+    episode_index_map = {}
     first_ep_idx = None
     last_ep_idx = None
     for idx, episode_dir in enumerate(episode_dirs):
+        if resume and dataset is None:
+            # 仅在第一次循环时加载已有数据集
+            dataset = LeRobotDataset(
+                repo_id,
+                root=lerobot_root,
+            )
+            next_episode_index = dataset.meta.total_episodes
         # 读取 meta.jsonl
         features_path = episode_dir / "meta.jsonl"
         with open(features_path, "r") as f:
@@ -107,6 +119,17 @@ def convert_expand_to_lerobot_batch(
                     items.append((new_key, v))
             return dict(items)
 
+            """
+            dataset = LeRobotDataset.create(
+                repo_id=repo_id,
+                fps=fps,
+                features=features,
+                root=lerobot_root,
+                use_videos=use_videos,
+            )
+            Raises:
+                FileNotFoundError: _description_
+            """
         if dataset is None:
             features = {}
             # 如果 frames 中包含 joints，则构造 observation.state 与 action
@@ -148,8 +171,15 @@ def convert_expand_to_lerobot_batch(
                 root=lerobot_root,
                 use_videos=use_videos,
             )
-        # 从文件夹名提取 episode_index
-        episode_index = int(episode_dir.name.split('_')[-1])
+        # 确定 episode_index：resume 时追加在已有集数之后，否则沿用目录编号
+        if resume:
+            if next_episode_index is None:
+                next_episode_index = dataset.meta.total_episodes
+            episode_index = next_episode_index
+            next_episode_index += 1
+        else:
+            episode_index = int(episode_dir.name.split('_')[-1])
+        episode_index_map[episode_index] = episode_dir
         if first_ep_idx is None:
             first_ep_idx = episode_index
         last_ep_idx = episode_index
@@ -258,7 +288,7 @@ def convert_expand_to_lerobot_batch(
         batch_t0 = time.time()
         # 只为本批次 episode 建软链接
         for ep_idx in range(start, end):
-            ep_dir = [d for d in episode_dirs if int(d.name.split('_')[-1]) == ep_idx][0]
+            ep_dir = episode_index_map[ep_idx]
             # 使用 meta.jsonl 中每帧的相机字段路径来创建目标目录下按帧命名的软链接，确保编码器看到连续的 frame_000000.png.. 文件
             meta_path = ep_dir / "meta.jsonl"
             with open(meta_path, "r") as f:
@@ -295,7 +325,8 @@ def convert_expand_to_lerobot_batch(
 
 if __name__ == "__main__":
     # 示例用法
-    lerobot_root = "/home/agx/jedata/wrapper"
-    episodes_root = "/home/agx/jedata/test_1111/"  # 传入包含多个episode_xxxxxx的根目录
+    lerobot_root = "/home/kleist/Documents/Database/test_1125_test/"
+    episodes_root = "/home/kleist/Documents/Database/temp/"  # 传入包含多个episode_xxxxxx的根目录
     task = "When the conveyor's red light turns on, pick the PCBs from the conveyor and place them into the yellow container on the table; once the container is full, stop moving the conveyor."
-    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task)
+    resume = True
+    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume)
