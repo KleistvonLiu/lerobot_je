@@ -18,6 +18,11 @@ def convert_expand_to_lerobot_batch(
 ):
     t0 = time.time()
     episodes_root = Path(episodes_root)
+    # 如果不是 resume 模式但目标数据目录已存在，立刻报错以避免覆盖已有数据
+    if (not resume) and Path(lerobot_root).exists():
+        raise FileExistsError(
+            f"目标数据目录已存在: {lerobot_root}. 若要在已有数据集后追加，请设置 resume=True；若确实要覆盖请先删除该目录。"
+        )
     # 自动查找所有 episode 目录
     episode_dirs = sorted([d for d in episodes_root.iterdir() if d.is_dir() and d.name.startswith("episode_")])
     print(f"[INFO] 共检测到 {len(episode_dirs)} 个episode: {[d.name for d in episode_dirs]}")
