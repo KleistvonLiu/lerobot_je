@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import re
+import shutil
+from datetime import datetime
 
 def get_episode_dirs(dataset_root):
     return sorted([p for p in Path(dataset_root).iterdir() if p.is_dir() and p.name.startswith('episode_')])
@@ -85,6 +87,109 @@ def get_attr(obj, path):
                 return None
     return obj
 
+def get_log_path(dataset_root):
+    return Path(dataset_root) / "edit_log.jsonl"
+
+
+def ensure_log(dataset_root):
+    p = get_log_path(dataset_root)
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("")
+    return p
+
+
+def append_log_entry(dataset_root, entry):
+    p = ensure_log(dataset_root)
+    entry_copy = dict(entry)
+    entry_copy['_ts'] = datetime.utcnow().isoformat()
+    with open(p, 'a') as f:
+        f.write(json.dumps(entry_copy, ensure_ascii=False) + '\n')
+
+
+def read_log_entries(dataset_root):
+    p = get_log_path(dataset_root)
+    if not p.exists():
+        return []
+    with open(p, 'r') as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def apply_single_entry(entry, dataset_root):
+    op = entry.get('op')
+    if op == 'delete_episode':
+        from edit_sim_recorded_dataset import delete_episode
+        delete_episode(str(Path(dataset_root)), int(entry['episode_idx']))
+    elif op == 'delete_frames':
+        from edit_sim_recorded_dataset import delete_frames
+        delete_frames(entry['episode_dir'], int(entry['start_idx']), int(entry['num_frames']))
+    elif op == 'interpolate_meta_attr':
+        from edit_sim_recorded_dataset import interpolate_meta_attr
+        interpolate_meta_attr(entry['episode_dir'], int(entry['frame_idx']), entry['attr_path'])
+    elif op == 'split_and_append':
+        ep_dir = Path(entry['episode_dir'])
+        split_start = int(entry['split_start'])
+        split_end = int(entry['split_end'])
+        with open(ep_dir / "meta.jsonl", 'r') as f:
+            lines = [json.loads(line) for line in f]
+        new_lines = lines[split_start:split_end+1]
+        dataset_root_path = Path(dataset_root)
+        all_eps = get_episode_dirs(dataset_root)
+        new_ep_idx = int(all_eps[-1].name.split('_')[1]) + 1 if all_eps else 0
+        new_ep_dir = dataset_root_path / f"episode_{new_ep_idx:06d}"
+        new_ep_dir.mkdir(parents=True, exist_ok=True)
+        def recursive_update(obj, old_idx, new_idx):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    obj[k] = recursive_update(v, old_idx, new_idx)
+            elif isinstance(obj, list):
+                return [recursive_update(v, old_idx, new_idx) for v in obj]
+            elif isinstance(obj, str):
+                pattern = rf"frame_{old_idx:06d}\.png"
+                new_name = f"frame_{new_idx:06d}.png"
+                return re.sub(pattern, new_name, obj)
+            return obj
+        for i, item in enumerate(new_lines):
+            item['episode_idx'] = new_ep_idx
+            for k in ['frame_idx', 'frame_index', 'frame_id']:
+                if k in item:
+                    item[k] = i
+            old_idx = split_start + i
+            item = recursive_update(item, old_idx, i)
+            new_lines[i] = item
+        with open(new_ep_dir / "meta.jsonl", 'w') as f:
+            for item in new_lines:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        old_images_dir = ep_dir / "images"
+        if old_images_dir.exists():
+            new_images_dir = new_ep_dir / "images"
+            new_images_dir.mkdir(exist_ok=True)
+            for cam_dir in old_images_dir.iterdir():
+                if cam_dir.is_dir():
+                    new_cam_dir = new_images_dir / cam_dir.name
+                    new_cam_dir.mkdir(exist_ok=True)
+                    for i, old_idx in enumerate(range(split_start, split_end+1)):
+                        old_img = cam_dir / f"frame_{old_idx:06d}.png"
+                        new_img = new_cam_dir / f"frame_{i:06d}.png"
+                        if old_img.exists():
+                            shutil.copy(str(old_img), str(new_img))
+    else:
+        raise ValueError(f"Unknown op: {op}")
+
+
+def apply_edit_log(dataset_root, stop_on_error=True):
+    entries = read_log_entries(dataset_root)
+    results = []
+    for i, entry in enumerate(entries):
+        try:
+            apply_single_entry(entry, dataset_root)
+            results.append({'i': i, 'ok': True})
+        except Exception as e:
+            results.append({'i': i, 'ok': False, 'error': str(e)})
+            if stop_on_error:
+                break
+    return results
+
 def main():
     st.title("Sim Recorded Dataset 可视化编辑工具")
     st.markdown("---")
@@ -133,6 +238,15 @@ def main():
             dataset_root_str = str(Path(episode_dir).parent)
             episode_idx = int(episode_dir.name.split('_')[1])
             delete_episode(dataset_root_str, episode_idx)
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'delete_episode',
+                    'episode_idx': episode_idx,
+                    'episode_dir': str(episode_dir)
+                })
+            except Exception:
+                pass
             st.success(f"已删除 {episode_dir} 并顺移后续编号")
             st.rerun()
     # 删除帧
@@ -142,6 +256,16 @@ def main():
         if st.button("删除帧"):
             from edit_sim_recorded_dataset import delete_frames
             delete_frames(str(episode_dir), int(start_idx), int(num_frames))
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'delete_frames',
+                    'episode_dir': str(episode_dir),
+                    'start_idx': int(start_idx),
+                    'num_frames': int(num_frames)
+                })
+            except Exception:
+                pass
             st.success(f"已删除 {episode_dir.name} 的帧 {start_idx} ~ {int(start_idx)+int(num_frames)-1}")
             st.rerun()
     # 插值属性
@@ -181,6 +305,16 @@ def main():
         if st.button("插值该属性"):
             from edit_sim_recorded_dataset import interpolate_meta_attr
             interpolate_meta_attr(str(episode_dir), int(frame_idx), attr_path)
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'interpolate_meta_attr',
+                    'episode_dir': str(episode_dir),
+                    'frame_idx': int(frame_idx),
+                    'attr_path': attr_path
+                })
+            except Exception:
+                pass
             st.success(f"已插值 {episode_dir.name} 第 {frame_idx} 帧的 {attr_path}")
             st.rerun()
     # 异常检测与修复（仅 joint/tactile）
@@ -312,6 +446,16 @@ def main():
                             if idx == 0 or idx == len(seq)-1:
                                 continue
                             interpolate_meta_attr(str(episode_dir), int(idx), attr_path_full)
+                            # 记录到修改日志（为每个插值操作追加一条日志）
+                            try:
+                                append_log_entry(dataset_root, {
+                                    'op': 'interpolate_meta_attr',
+                                    'episode_dir': str(episode_dir),
+                                    'frame_idx': int(idx),
+                                    'attr_path': attr_path_full
+                                })
+                            except Exception:
+                                pass
                         st.success(f"已对 {len(outlier_idx)} 个异常点插值修复")
                         st.rerun()
     # 分割并追加 episode
@@ -372,8 +516,29 @@ def main():
                             if old_img.exists():
                                 import shutil
                                 shutil.copy(str(old_img), str(new_img))
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'split_and_append',
+                    'episode_dir': str(episode_dir),
+                    'split_start': int(split_start),
+                    'split_end': int(split_end)
+                })
+            except Exception:
+                pass
             st.success(f"已分割 {episode_dir.name} 的帧 {split_start}~{split_end}，追加为新 episode_{new_ep_idx:06d}")
             st.rerun()
+    # 编辑日志查看与应用
+    with st.expander("编辑日志 (edit_log.jsonl)"):
+        ensure_log(dataset_root)
+        entries = read_log_entries(dataset_root)
+        st.write(f"共 {len(entries)} 条记录")
+        for i, e in enumerate(entries):
+            st.json(e)
+        if st.button("一键应用编辑日志"):
+            res = apply_edit_log(dataset_root, stop_on_error=True)
+            st.write(res)
+            st.success("日志应用完成，若无错误将按顺序执行所有变更")
     # 一键检查数据一致性
     with st.expander("一键检查数据一致性"):
         if st.button("开始检查"):
