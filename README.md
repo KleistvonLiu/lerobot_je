@@ -460,8 +460,9 @@ right back CP02653000R4
 
 python -m lerobot.scripts.visualize_dataset \
     --repo-id lerobot/test \
-    --episode-index 0 \
-    --root /home/test/jemotor/jedata/test_1009
+    --root /home/kleist/Documents/Database/test_1125_test/ \
+    --episode-index 250
+
 
 
 
@@ -473,3 +474,4 @@ python -m lerobot.replay_aloha_agilex_single_arm\
     --dataset.episode=21\
     --dataset.root="/home/test/jemotor/jedata/test_0928"\
     --replay_mode=1
+    
