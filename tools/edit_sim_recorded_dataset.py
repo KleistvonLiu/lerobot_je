@@ -49,7 +49,17 @@ def delete_frames(episode_dir, start_idx, num_frames):
     # 1. 读meta
     with open(meta_path, 'r') as f:
         lines = [json.loads(line) for line in f]
+    n_frames = len(lines)
+    if num_frames <= 0:
+        print(f"num_frames must be > 0")
+        return
+    if start_idx < 0 or start_idx >= n_frames:
+        print(f"start_idx {start_idx} out of range (0..{n_frames-1}), no frames deleted")
+        return
     end_idx = start_idx + num_frames
+    if end_idx > n_frames:
+        print(f"Requested end index {end_idx-1} exceeds last frame index {n_frames-1}; no frames deleted")
+        return
     frame_indices = set(range(start_idx, end_idx))
     # 2. 删除指定帧
     keep = [i for i in range(len(lines)) if i not in frame_indices]
@@ -161,6 +171,40 @@ def interpolate_meta_attr(episode_dir, frame_idx, attr_path):
             f.write(json.dumps(item, ensure_ascii=False) + '\n')
     print(f"Interpolated {attr_path} at frame {frame_idx} in {ep_dir}.")
 
+# 新增：按给定起始索引重排 episodes（支持原始索引非0或不连续）
+def reindex_episodes(dataset_root, index_start=0):
+    """Renumber episodes to be continuous starting from index_start.
+    Uses a two-phase rename (temporary names) to avoid name collisions.
+    Updates meta.jsonl 'episode_idx' fields accordingly.
+    """
+    dataset_root = Path(dataset_root)
+    eps = sorted([p for p in dataset_root.iterdir() if p.is_dir() and p.name.startswith('episode_')], key=lambda p: int(p.name.split('_')[1]))
+    if not eps:
+        print("No episodes found to reindex.")
+        return
+    # Phase 1: temporary rename
+    tmp_names = []
+    for i, ep in enumerate(eps):
+        tmp = ep.parent / f".__tmp_reindex_{i:06d}"
+        ep.rename(tmp)
+        tmp_names.append(tmp)
+    # Phase 2: final names and update meta
+    for i, tmp in enumerate(tmp_names):
+        new_idx = index_start + i
+        new_name = f"episode_{new_idx:06d}"
+        new_dir = tmp.parent / new_name
+        meta_path = tmp / "meta.jsonl"
+        if meta_path.exists():
+            with open(meta_path, 'r') as f:
+                lines = [json.loads(line) for line in f]
+            for item in lines:
+                item['episode_idx'] = new_idx
+            with open(meta_path, 'w') as f:
+                for item in lines:
+                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        tmp.rename(new_dir)
+    print(f"Reindexed {len(tmp_names)} episodes starting at {index_start}.")
+
 def main():
     parser = argparse.ArgumentParser(description="Edit sim_recorded_dataset episodes/frames/meta.")
     subparsers = parser.add_subparsers(dest='command')
@@ -182,6 +226,11 @@ def main():
     p_interp.add_argument('frame_idx', type=int)
     p_interp.add_argument('attr_path', type=str, help="如 observation.state[2] 或 action[0]")
 
+    # 新增：重排 episode 索引
+    p_reindex = subparsers.add_parser('reindex-episodes')
+    p_reindex.add_argument('dataset_root')
+    p_reindex.add_argument('--start', type=int, default=0, help='起始索引 (default 0)')
+
     args = parser.parse_args()
     if args.command == 'delete-episode':
         delete_episode(args.dataset_root, args.episode_idx)
@@ -189,6 +238,8 @@ def main():
         delete_frames(args.episode_dir, args.start_idx, args.num_frames)
     elif args.command == 'interpolate-meta':
         interpolate_meta_attr(args.episode_dir, args.frame_idx, args.attr_path)
+    elif args.command == 'reindex-episodes':
+        reindex_episodes(args.dataset_root, index_start=args.start)
     else:
         parser.print_help()
 

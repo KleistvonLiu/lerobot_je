@@ -173,6 +173,10 @@ def apply_single_entry(entry, dataset_root):
                         new_img = new_cam_dir / f"frame_{i:06d}.png"
                         if old_img.exists():
                             shutil.copy(str(old_img), str(new_img))
+    elif op == 'reindex_episodes':
+        from edit_sim_recorded_dataset import reindex_episodes
+        start = int(entry.get('start', 0))
+        reindex_episodes(dataset_root, index_start=start)
     else:
         raise ValueError(f"Unknown op: {op}")
 
@@ -539,6 +543,22 @@ def main():
             res = apply_edit_log(dataset_root, stop_on_error=True)
             st.write(res)
             st.success("日志应用完成，若无错误将按顺序执行所有变更")
+
+    with st.expander("序号重排序"):
+        # 新增：重排索引 UI
+        st.markdown("---")
+        st.write("重排 episode 索引")
+        reindex_start = st.number_input("起始索引 (reindex start)", min_value=0, value=0)
+        if st.button("重排索引并记录日志"):
+            from edit_sim_recorded_dataset import reindex_episodes
+            try:
+                reindex_episodes(dataset_root, index_start=int(reindex_start))
+                append_log_entry(dataset_root, {'op': 'reindex_episodes', 'start': int(reindex_start)})
+                st.success(f"已重排索引并记录日志，起始索引={reindex_start}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"重排失败: {e}")
+
     # 一键检查数据一致性
     with st.expander("一键检查数据一致性"):
         if st.button("开始检查"):
