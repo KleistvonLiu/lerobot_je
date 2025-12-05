@@ -436,11 +436,11 @@ python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_f
         --dataset.single_task="Pick up the PCB board from the green conveyor belt and place it into the yellow container."    \
         --robot1.tactiles="{
         tactile1:{
-          type: serial, 
-          port: "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0", 
-          width: 8, 
-          height: 4, 
-          frame_size: 70, 
+          type: serial,
+          port: "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0",
+          width: 8,
+          height: 4,
+          frame_size: 70,
           header: [255, 132]
           }
         }" \
@@ -474,4 +474,5 @@ python -m lerobot.replay_aloha_agilex_single_arm\
     --dataset.episode=21\
     --dataset.root="/home/test/jemotor/jedata/test_0928"\
     --replay_mode=1
-    
+
+python3 ./src/lerobot/plot_positions.py /media/kleist/NewNTFS1/test_1112 --start-episode-idx 313
