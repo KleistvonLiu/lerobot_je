@@ -20,12 +20,14 @@ class TorqueFilter:
 
 def main():
     # ===== 需要你根据实际路径修改 =====
-    jsonl_path = "/media/kleist/NewNTFS1/test_1128/episode_000039/meta.jsonl"
+    jsonl_path = "/media/kleist/Lenovo Y910/log/episode_000000/meta.jsonl"
     target_episode_idx = 39  # 只处理 episode_idx == 39 的数据
 
     timestamps = []      # 保存每一帧的 timestamp
     efforts_list = []    # 保存每一帧的 7 维 effort
     joint_names = None   # 关节名字
+
+    target_effort = "effort_filtered" # "effort"
 
     # ===== 1. 读取 jsonl 文件，筛选指定 episode 的 effort 数据 =====
     with open(jsonl_path, "r") as f:
@@ -35,9 +37,6 @@ def main():
                 continue
             data = json.loads(line)
 
-            if data.get("episode_idx") != target_episode_idx:
-                continue
-
             timestamps.append(data["timestamp"])
 
             joints = data.get("joints", [])
@@ -45,7 +44,7 @@ def main():
                 continue
 
             j0 = joints[0]
-            effort = j0.get("effort", None)
+            effort = j0.get(target_effort, None)
             if effort is None:
                 continue
 
@@ -106,14 +105,14 @@ def main():
 
     for i in range(D):
         ax = axes[i]
-        ax.plot(x, efforts[:, i], label="原始 effort", alpha=0.6)
-        ax.plot(x, efforts_filtered[:, i], label="滤波后 effort", linewidth=2)
+        ax.plot(x, efforts[:, i], label="original effort", alpha=0.6)
+        ax.plot(x, efforts_filtered[:, i], label="filtered effort", linewidth=2)
         ax.set_ylabel(joint_names[i])
         ax.grid(True, linestyle="--", alpha=0.3)
         if i == 0:
             ax.legend(loc="upper right", fontsize=8)
 
-    axes[-1].set_xlabel("帧 index")
+    axes[-1].set_xlabel("frame index")
     plt.tight_layout(rect=[0, 0, 1, 0.93])
     plt.show()
 

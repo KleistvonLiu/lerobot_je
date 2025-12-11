@@ -1,10 +1,13 @@
-import numpy as np
-import time
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-import os
 import json
+import os
+import time
 from pathlib import Path
+
+import numpy as np
 from PIL import Image
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
 
 def convert_expand_to_lerobot_batch(
     episodes_root,
@@ -15,6 +18,7 @@ def convert_expand_to_lerobot_batch(
     use_videos=True,
     batch_encode_num=5,  # 新增参数，控制每次并发编码多少个episode
     resume = False,
+    target_meta_file_name = "meta.jsonl"
 ):
     t0 = time.time()
     episodes_root = Path(episodes_root)
@@ -42,11 +46,11 @@ def convert_expand_to_lerobot_batch(
             )
             next_episode_index = dataset.meta.total_episodes
         # 读取 meta.jsonl
-        features_path = episode_dir / "meta.jsonl"
+        features_path = episode_dir / target_meta_file_name
         with open(features_path, "r") as f:
             features_list = [json.loads(line) for line in f]
         batch_size = len(features_list)
-        print(f"[INFO] [{episode_dir.name}] meta.jsonl 读取完成，帧数: {batch_size}")
+        print(f"[INFO] [{episode_dir.name}] {target_meta_file_name} 读取完成，帧数: {batch_size}")
         # 相机列表由 meta.jsonl 中的键决定：以 "cam" 开头的字段被视为相机属性（如 camera_01_color_image_raw）
         # 不再直接从 images/ 目录枚举相机。保持排序以稳定输出顺序。
         camera_names = sorted([k for k in (features_list[0].keys() if len(features_list)>0 else []) if str(k).startswith('cam')])
@@ -285,6 +289,7 @@ def convert_expand_to_lerobot_batch(
         dataset.save_episode(episode_data=episode_data, encode_videos=False)
         t5 = time.time()
         print(f"[INFO] Saved episode {episode_index} to {lerobot_root}，耗时: {t5-t4:.3f}s")
+    exit(1)
     # 分批顺序编码视频
     print(f"[INFO] 开始分批编码视频，每批 {batch_encode_num} 个episode")
     for start in range(first_ep_idx, last_ep_idx + 1, batch_encode_num):
@@ -295,7 +300,7 @@ def convert_expand_to_lerobot_batch(
         for ep_idx in range(start, end):
             ep_dir = episode_index_map[ep_idx]
             # 使用 meta.jsonl 中每帧的相机字段路径来创建目标目录下按帧命名的软链接，确保编码器看到连续的 frame_000000.png.. 文件
-            meta_path = ep_dir / "meta.jsonl"
+            meta_path = ep_dir / target_meta_file_name
             with open(meta_path, "r") as f:
                 features_list_ep = [json.loads(line) for line in f]
             # 从 meta 中读取相机字段名（以 'cam' 开头）以保持一致
@@ -330,8 +335,9 @@ def convert_expand_to_lerobot_batch(
 
 if __name__ == "__main__":
     # 示例用法
-    lerobot_root = "/home/kleist/Documents/Database/test_1125_test/"
-    episodes_root = "/home/kleist/Documents/Database/temp/"  # 传入包含多个episode_xxxxxx的根目录
-    task = "When the conveyor's red light turns on, pick the PCBs from the conveyor and place them into the yellow container on the table; once the container is full, stop moving the conveyor."
-    resume = True
-    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume)
+    lerobot_root = "/home/kleist/Documents/Database/test_1128_filtered/"
+    episodes_root = "/media/kleist/NewNTFS1/test_1128_edited/"  # 传入包含多个episode_xxxxxx的根目录
+    task = "Pick up the PCB board from the conveyor belt and place it into the yellow container."
+    resume = False
+    target_meta_file_name = "meta_effort_filtered.jsonl"
+    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume,target_meta_file_name = target_meta_file_name)
