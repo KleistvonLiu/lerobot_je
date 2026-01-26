@@ -1,0 +1,648 @@
+import streamlit as st
+import os
+import json
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import re
+import shutil
+from datetime import datetime
+
+def get_episode_dirs(dataset_root):
+    return sorted([p for p in Path(dataset_root).iterdir() if p.is_dir() and p.name.startswith('episode_')])
+
+def get_meta_info(episode_dir):
+    meta_path = Path(episode_dir) / "meta.jsonl"
+    if not meta_path.exists():
+        return 0, {}
+    with open(meta_path, 'r') as f:
+        lines = [json.loads(line) for line in f]
+    if not lines:
+        return 0, {}
+    # 统计帧数和属性
+    frame_count = len(lines)
+    first_meta = lines[0]
+    return frame_count, first_meta
+
+def flatten_numeric_keys(d, prefix=""):
+    keys = []
+    if isinstance(d, dict):
+        for k, v in d.items():
+            full_k = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                keys.extend(flatten_numeric_keys(v, full_k))
+            elif isinstance(v, (list, tuple, np.ndarray)):
+                arr = np.array(v)
+                if arr.ndim == 0:
+                    keys.append(full_k)
+                else:
+                    for i in range(arr.shape[0]):
+                        keys.append(f"{full_k}[{i}]")
+            elif isinstance(v, (float, int)):
+                keys.append(full_k)
+    return keys
+
+def flatten_numeric_attrs_and_shapes(d, prefix=""):
+    attrs = []
+    shapes = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            full_k = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                sub_attrs, sub_shapes = flatten_numeric_attrs_and_shapes(v, full_k)
+                attrs.extend(sub_attrs)
+                shapes.update(sub_shapes)
+            elif isinstance(v, list):
+                for i, item in enumerate(v):
+                    sub_attrs, sub_shapes = flatten_numeric_attrs_and_shapes(item, f"{full_k}[{i}]")
+                    attrs.extend(sub_attrs)
+                    shapes.update(sub_shapes)
+            elif isinstance(v, (tuple, np.ndarray)):
+                arr = np.array(v)
+                attrs.append(full_k)
+                if arr.ndim == 0:
+                    shapes[full_k] = []
+                else:
+                    shapes[full_k] = list(arr.shape)
+            elif isinstance(v, (float, int)):
+                attrs.append(full_k)
+                shapes[full_k] = []
+    return attrs, shapes
+
+def get_attr(obj, path):
+    # 兼容 joints[0].position[0] 这类路径
+    parts = path.replace(']', '').replace('[', '.').split('.')
+    for p in parts:
+        if not p:
+            continue
+        if p.isdigit():
+            if isinstance(obj, list) and len(obj) > int(p):
+                obj = obj[int(p)]
+            else:
+                return None
+        else:
+            if isinstance(obj, dict):
+                obj = obj.get(p, None)
+            else:
+                return None
+    return obj
+
+def get_log_path(dataset_root):
+    return Path(dataset_root) / "edit_log.jsonl"
+
+
+def ensure_log(dataset_root):
+    p = get_log_path(dataset_root)
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("")
+    return p
+
+
+def append_log_entry(dataset_root, entry):
+    p = ensure_log(dataset_root)
+    entry_copy = dict(entry)
+    entry_copy['_ts'] = datetime.utcnow().isoformat()
+    with open(p, 'a') as f:
+        f.write(json.dumps(entry_copy, ensure_ascii=False) + '\n')
+
+
+def read_log_entries(dataset_root):
+    p = get_log_path(dataset_root)
+    if not p.exists():
+        return []
+    with open(p, 'r') as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def apply_single_entry(entry, dataset_root):
+    op = entry.get('op')
+    if op == 'delete_episode':
+        from edit_sim_recorded_dataset import delete_episode
+        delete_episode(str(Path(dataset_root)), int(entry['episode_idx']))
+    elif op == 'delete_frames':
+        from edit_sim_recorded_dataset import delete_frames
+        delete_frames(entry['episode_dir'], int(entry['start_idx']), int(entry['num_frames']))
+    elif op == 'interpolate_meta_attr':
+        from edit_sim_recorded_dataset import interpolate_meta_attr
+        interpolate_meta_attr(entry['episode_dir'], int(entry['frame_idx']), entry['attr_path'])
+    elif op == 'split_and_append':
+        ep_dir = Path(entry['episode_dir'])
+        split_start = int(entry['split_start'])
+        split_end = int(entry['split_end'])
+        with open(ep_dir / "meta.jsonl", 'r') as f:
+            lines = [json.loads(line) for line in f]
+        new_lines = lines[split_start:split_end+1]
+        dataset_root_path = Path(dataset_root)
+        all_eps = get_episode_dirs(dataset_root)
+        new_ep_idx = int(all_eps[-1].name.split('_')[1]) + 1 if all_eps else 0
+        new_ep_dir = dataset_root_path / f"episode_{new_ep_idx:06d}"
+        new_ep_dir.mkdir(parents=True, exist_ok=True)
+        def recursive_update(obj, old_idx, new_idx):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    obj[k] = recursive_update(v, old_idx, new_idx)
+            elif isinstance(obj, list):
+                return [recursive_update(v, old_idx, new_idx) for v in obj]
+            elif isinstance(obj, str):
+                pattern = rf"frame_{old_idx:06d}\.png"
+                new_name = f"frame_{new_idx:06d}.png"
+                return re.sub(pattern, new_name, obj)
+            return obj
+        for i, item in enumerate(new_lines):
+            item['episode_idx'] = new_ep_idx
+            for k in ['frame_idx', 'frame_index', 'frame_id']:
+                if k in item:
+                    item[k] = i
+            old_idx = split_start + i
+            item = recursive_update(item, old_idx, i)
+            new_lines[i] = item
+        with open(new_ep_dir / "meta.jsonl", 'w') as f:
+            for item in new_lines:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        old_images_dir = ep_dir / "images"
+        if old_images_dir.exists():
+            new_images_dir = new_ep_dir / "images"
+            new_images_dir.mkdir(exist_ok=True)
+            for cam_dir in old_images_dir.iterdir():
+                if cam_dir.is_dir():
+                    new_cam_dir = new_images_dir / cam_dir.name
+                    new_cam_dir.mkdir(exist_ok=True)
+                    for i, old_idx in enumerate(range(split_start, split_end+1)):
+                        old_img = cam_dir / f"frame_{old_idx:06d}.png"
+                        new_img = new_cam_dir / f"frame_{i:06d}.png"
+                        if old_img.exists():
+                            shutil.copy(str(old_img), str(new_img))
+    elif op == 'reindex_episodes':
+        from edit_sim_recorded_dataset import reindex_episodes
+        start = int(entry.get('start', 0))
+        reindex_episodes(dataset_root, index_start=start)
+    else:
+        raise ValueError(f"Unknown op: {op}")
+
+
+def apply_edit_log(dataset_root, stop_on_error=True):
+    entries = read_log_entries(dataset_root)
+    results = []
+    for i, entry in enumerate(entries):
+        try:
+            apply_single_entry(entry, dataset_root)
+            results.append({'i': i, 'ok': True})
+        except Exception as e:
+            results.append({'i': i, 'ok': False, 'error': str(e)})
+            if stop_on_error:
+                break
+    return results
+
+def main():
+    st.title("Sim Recorded Dataset 可视化编辑工具")
+    st.markdown("---")
+    dataset_root = st.text_input("数据集根目录", value="/path/to/sim_recorded_dataset")
+    if not Path(dataset_root).exists():
+        st.warning("请填写正确的数据集根目录")
+        st.stop()
+    episode_dirs = get_episode_dirs(dataset_root)
+    st.write(f"共 {len(episode_dirs)} 个 episode")
+    if not episode_dirs:
+        st.stop()
+    ep_names = [ep.name for ep in episode_dirs]
+    ep_idx = st.selectbox("选择 episode", range(len(ep_names)), format_func=lambda i: ep_names[i])
+    episode_dir = episode_dirs[ep_idx]
+    frame_count, first_meta = get_meta_info(episode_dir)
+    st.write(f"该 episode 有 {frame_count} 帧")
+    # 预览帧 metadata
+    if frame_count > 0:
+        preview_idx = st.slider("预览帧 idx", min_value=0, max_value=frame_count-1, value=0)
+        meta_path = Path(episode_dir) / "meta.jsonl"
+        with open(meta_path, 'r') as f:
+            lines = [json.loads(line) for line in f]
+        st.write(f"第 {preview_idx} 帧 metadata:")
+        st.json(lines[preview_idx])
+        # 专门显示 tactile 字段（如果存在）
+        if 'tactile' in lines[preview_idx]:
+            st.write("tactile 数据:")
+            st.json(lines[preview_idx]['tactile'])
+        # 预览相机图片
+        images_dir = Path(episode_dir) / "images"
+        if images_dir.exists():
+            with st.expander("预览该帧所有相机图片"):
+                cam_dirs = [d for d in images_dir.iterdir() if d.is_dir()]
+                for cam_dir in cam_dirs:
+                    img_path = cam_dir / f"frame_{preview_idx:06d}.png"
+                    if img_path.exists():
+                        st.image(str(img_path), caption=cam_dir.name, width='stretch')
+                    else:
+                        st.write(f"{cam_dir.name}: 无图片")
+
+    st.markdown("---")
+    # 删除 episode
+    with st.expander("删除整个 episode"):
+        if st.button(f"删除 {episode_dir.name}"):
+            from edit_sim_recorded_dataset import delete_episode
+            dataset_root_str = str(Path(episode_dir).parent)
+            episode_idx = int(episode_dir.name.split('_')[1])
+            delete_episode(dataset_root_str, episode_idx)
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'delete_episode',
+                    'episode_idx': episode_idx,
+                    'episode_dir': str(episode_dir)
+                })
+            except Exception:
+                pass
+            st.success(f"已删除 {episode_dir} 并顺移后续编号")
+            st.rerun()
+    # 删除帧
+    with st.expander("删除帧"):
+        start_idx = st.number_input("起始帧 (0-based)", min_value=0, max_value=max(0, frame_count-1), value=0)
+        num_frames = st.number_input("要删除的帧数", min_value=1, max_value=max(1, frame_count-int(start_idx)), value=1)
+        if st.button("删除帧"):
+            from edit_sim_recorded_dataset import delete_frames
+            delete_frames(str(episode_dir), int(start_idx), int(num_frames))
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'delete_frames',
+                    'episode_dir': str(episode_dir),
+                    'start_idx': int(start_idx),
+                    'num_frames': int(num_frames)
+                })
+            except Exception:
+                pass
+            st.success(f"已删除 {episode_dir.name} 的帧 {start_idx} ~ {int(start_idx)+int(num_frames)-1}")
+            st.rerun()
+    # 插值属性
+    with st.expander("插值属性"):
+        attr_options, attr_shapes = flatten_numeric_attrs_and_shapes(first_meta) if first_meta else ([], {})
+        # 拆分属性、列表索引、数组维度
+        def split_attr_path(attr):
+            parts = attr.split('[')
+            base = parts[0]
+            list_idx = None
+            if len(parts) > 1:
+                # Extract integer before any non-digit (e.g., '0].stamp_n')
+                match = re.match(r'(\d+)', parts[1])
+                if match:
+                    list_idx = int(match.group(1))
+            return base, list_idx
+        base_attrs = sorted(set([split_attr_path(a)[0] for a in attr_options]))
+        selected_base = st.selectbox("选择属性", base_attrs) if base_attrs else ""
+        list_indices = sorted(set([split_attr_path(a)[1] for a in attr_options if split_attr_path(a)[0]==selected_base and split_attr_path(a)[1] is not None])) if selected_base else []
+        selected_list_idx = st.selectbox("选择列表索引", list_indices) if list_indices else None
+        # 组合属性路径
+        attr_candidates = [a for a in attr_options if split_attr_path(a)[0]==selected_base and (split_attr_path(a)[1]==selected_list_idx if selected_list_idx is not None else True)]
+        selected_attr = attr_candidates[0] if attr_candidates else ""
+        dim_options = []
+        if selected_attr:
+            shape = attr_shapes.get(selected_attr, [])
+            if shape and len(shape) > 0:
+                dim_options = list(range(shape[0]))
+        selected_dim = st.selectbox("选择维度", dim_options) if dim_options else None
+        frame_idx = preview_idx if frame_count > 2 else 1
+        if selected_attr:
+            attr_path = f"{selected_attr}[{selected_dim}]" if selected_dim is not None else selected_attr
+        else:
+            attr_path = ""
+        st.write(f"插值路径: {attr_path}")
+        st.write(f"插值帧 idx: {frame_idx}")
+        if st.button("插值该属性"):
+            from edit_sim_recorded_dataset import interpolate_meta_attr
+            interpolate_meta_attr(str(episode_dir), int(frame_idx), attr_path)
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'interpolate_meta_attr',
+                    'episode_dir': str(episode_dir),
+                    'frame_idx': int(frame_idx),
+                    'attr_path': attr_path
+                })
+            except Exception:
+                pass
+            st.success(f"已插值 {episode_dir.name} 第 {frame_idx} 帧的 {attr_path}")
+            st.rerun()
+    # 异常检测与修复（仅 joint/tactile）
+    with st.expander("异常检测与修复（滑动均值法）"):
+        allowed_top = [k for k in ['joint', 'joints', 'tactile'] if k in first_meta]
+        if not allowed_top:
+            st.warning("当前数据不包含 joint 或 tactile 字段")
+        else:
+            top_selected = st.selectbox("选择属性类型", allowed_top)
+            # 新递归选择：字典递归下拉，遇到数组就停止
+            # 优化递归选择：list先选索引再递归，只有遇到数值数组才显示维度
+            def is_numeric_array(val):
+                if isinstance(val, (list, tuple, np.ndarray)):
+                    flat = np.array(val, dtype=object).flatten()
+                    return all(isinstance(x, (int, float, np.integer, np.floating)) for x in flat)
+                return False
+            def recursive_select(obj, prefix=""):
+                allowed_joint_keys = ["position", "velocity", "effort"]
+                if isinstance(obj, dict):
+                    # joint/joints下只允许 position/velocity/effort
+                    if prefix.startswith("joint") or prefix.startswith("joints"):
+                        keys = [k for k in obj.keys() if k in allowed_joint_keys]
+                        if not keys:
+                            st.warning(f"joint属性只支持: {allowed_joint_keys}")
+                            return obj, prefix
+                        selected = st.selectbox(f"选择 joint 属性 {prefix}", keys, key=prefix, index=0 if keys else None)
+                        # 递归到 position/velocity/effort后停止
+                        value = obj[selected]
+                        if is_numeric_array(value):
+                            return value, prefix + "." + selected if prefix else selected
+                        else:
+                            return recursive_select(value, prefix + "." + selected if prefix else selected)
+                    else:
+                        keys = list(obj.keys())
+                        selected = st.selectbox(f"选择字典属性 {prefix}", keys, key=prefix, index=0 if keys else None)
+                        return recursive_select(obj[selected], prefix + "." + selected if prefix else selected)
+                elif isinstance(obj, list):
+                    indices = list(range(len(obj)))
+                    selected = st.selectbox(f"选择列表索引 {prefix}", indices, key=prefix, index=0 if indices else None)
+                    return recursive_select(obj[selected], prefix + f"[{selected}]")
+                elif is_numeric_array(obj):
+                    # 数值数组，停止递归，主流程处理维度
+                    return obj, prefix
+                else:
+                    return obj, prefix
+            preview_obj = lines[0][top_selected]
+            value, attr_path = recursive_select(preview_obj, top_selected)
+            if is_numeric_array(value):
+                arr = np.array(value)
+                dim = None
+                if arr.ndim > 0:
+                    dim = st.selectbox("选择维度", list(range(arr.shape[0])), key=attr_path, index=0 if arr.shape[0] > 0 else None)
+                    attr_path_full = f"{attr_path}[{dim}]"
+                else:
+                    attr_path_full = attr_path
+            else:
+                arr = value
+                dim = None
+                attr_path_full = attr_path
+            window = st.number_input("滑动窗口大小", min_value=1, max_value=50, value=5)
+            threshold = st.number_input("异常判定阈值（与滑动均值差的绝对值）", min_value=0.0, value=5.0)
+            seq = []
+            warn_once = False
+            for meta in lines:
+                frame_id = meta.get('frame_idx', lines.index(meta))
+                if top_selected not in meta or meta[top_selected] is None:
+                    if not warn_once:
+                        st.warning(f"帧 {frame_id} 路径无有效数据: {attr_path}")
+                        warn_once = True
+                    seq.append(np.nan)
+                    continue
+                obj = meta[top_selected]
+                # 只用下拉栏选择的完整路径索引，不做自动补齐
+                obj = get_attr(obj, attr_path[len(top_selected):].strip('.')) if attr_path != top_selected else obj
+                # 检查 obj 是否为数值数组
+                if obj is None or not is_numeric_array(obj):
+                    if not warn_once:
+                        st.warning(f"帧 {frame_id} 路径无有效数据: {attr_path}")
+                        warn_once = True
+                    seq.append(np.nan)
+                    continue
+                arr = np.array(obj)
+                val = None
+                if dim is not None and arr.ndim > 0:
+                    try:
+                        v = arr[dim]
+                        while isinstance(v, (list, np.ndarray)) and not isinstance(v, (int, float, np.integer, np.floating)):
+                            v = v[0]
+                        if isinstance(v, (int, float, np.integer, np.floating)):
+                            val = float(v)
+                    except Exception as e:
+                        if not warn_once:
+                            st.warning(f"帧 {frame_id} 维度数据异常: {e}")
+                            warn_once = True
+                        val = None
+                elif dim is not None and arr.ndim == 0:
+                    if not warn_once:
+                        st.warning(f"帧 {frame_id} 维度数据异常: 数据为标量，无法索引维度")
+                        warn_once = True
+                    val = None
+                else:
+                    try:
+                        v = arr
+                        while isinstance(v, (list, np.ndarray)) and not isinstance(v, (int, float, np.integer, np.floating)):
+                            v = v[0]
+                        if isinstance(v, (int, float, np.integer, np.floating)):
+                            val = float(v)
+                    except Exception as e:
+                        if not warn_once:
+                            st.warning(f"帧 {frame_id} 数据异常: {e}")
+                            warn_once = True
+                        val = None
+                if val is not None:
+                    seq.append(val)
+                else:
+                    seq.append(np.nan)
+            seq = np.array(seq)
+            if len(seq) > 0:
+                smooth = pd.Series(seq).rolling(window, center=True, min_periods=1).mean().to_numpy()
+                diff = np.abs(seq - smooth)
+                outlier_idx = np.where(diff > threshold)[0]
+                st.line_chart({"原始": seq, "滑动均值": smooth})
+                st.write(f"检测到 {len(outlier_idx)} 个异常点：", outlier_idx.tolist())
+                if len(outlier_idx) > 0:
+                    st.dataframe({"异常帧idx": outlier_idx, "原始值": seq[outlier_idx], "滑动均值": smooth[outlier_idx], "差值": diff[outlier_idx]})
+                    if st.button("对所有异常点插值修复"):
+                        from edit_sim_recorded_dataset import interpolate_meta_attr
+                        for idx in outlier_idx:
+                            if idx == 0 or idx == len(seq)-1:
+                                continue
+                            interpolate_meta_attr(str(episode_dir), int(idx), attr_path_full)
+                            # 记录到修改日志（为每个插值操作追加一条日志）
+                            try:
+                                append_log_entry(dataset_root, {
+                                    'op': 'interpolate_meta_attr',
+                                    'episode_dir': str(episode_dir),
+                                    'frame_idx': int(idx),
+                                    'attr_path': attr_path_full
+                                })
+                            except Exception:
+                                pass
+                        st.success(f"已对 {len(outlier_idx)} 个异常点插值修复")
+                        st.rerun()
+    # 分割并追加 episode
+    with st.expander("分割并追加 episode"):
+        split_start = st.number_input("起始帧 (start_idx)", min_value=0, max_value=max(0, frame_count-2), value=0)
+        split_end = st.number_input("结束帧 (end_idx, 包含)", min_value=split_start+1, max_value=frame_count-1, value=split_start+1)
+        if st.button("分割并追加为新 episode"):
+            # 1. 读取 meta
+            meta_path = Path(episode_dir) / "meta.jsonl"
+            with open(meta_path, 'r') as f:
+                lines = [json.loads(line) for line in f]
+            new_lines = lines[split_start:split_end+1]
+            # 2. 新 episode 目录
+            dataset_root_path = Path(dataset_root)
+            all_eps = get_episode_dirs(dataset_root)
+            new_ep_idx = int(all_eps[-1].name.split('_')[1]) + 1 if all_eps else 0
+            new_ep_dir = dataset_root_path / f"episode_{new_ep_idx:06d}"
+            new_ep_dir.mkdir(parents=True, exist_ok=True)
+            # 3. 写新 meta.jsonl，frame_idx/episode_idx/相关索引重编号
+            def recursive_update(obj, old_idx, new_idx):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        obj[k] = recursive_update(v, old_idx, new_idx)
+                elif isinstance(obj, list):
+                    return [recursive_update(v, old_idx, new_idx) for v in obj]
+                elif isinstance(obj, str):
+                    # 替换 frame_xxxxxx.png
+                    pattern = rf"frame_{old_idx:06d}\.png"
+                    new_name = f"frame_{new_idx:06d}.png"
+                    return re.sub(pattern, new_name, obj)
+                return obj
+            for i, item in enumerate(new_lines):
+                # 新 episode_idx
+                item['episode_idx'] = new_ep_idx
+                # frame_idx/相关索引重编号
+                for k in ['frame_idx', 'frame_index', 'frame_id']:
+                    if k in item:
+                        item[k] = i
+                # 递归替换所有 frame_xxxxxx.png
+                old_idx = split_start + i
+                item = recursive_update(item, old_idx, i)
+                new_lines[i] = item
+            with open(new_ep_dir / "meta.jsonl", 'w') as f:
+                for item in new_lines:
+                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
+            # 4. 复制图片
+            old_images_dir = Path(episode_dir) / "images"
+            if old_images_dir.exists():
+                new_images_dir = new_ep_dir / "images"
+                new_images_dir.mkdir(exist_ok=True)
+                for cam_dir in old_images_dir.iterdir():
+                    if cam_dir.is_dir():
+                        new_cam_dir = new_images_dir / cam_dir.name
+                        new_cam_dir.mkdir(exist_ok=True)
+                        for i, old_idx in enumerate(range(split_start, split_end+1)):
+                            old_img = cam_dir / f"frame_{old_idx:06d}.png"
+                            new_img = new_cam_dir / f"frame_{i:06d}.png"
+                            if old_img.exists():
+                                import shutil
+                                shutil.copy(str(old_img), str(new_img))
+            # 记录到修改日志
+            try:
+                append_log_entry(dataset_root, {
+                    'op': 'split_and_append',
+                    'episode_dir': str(episode_dir),
+                    'split_start': int(split_start),
+                    'split_end': int(split_end)
+                })
+            except Exception:
+                pass
+            st.success(f"已分割 {episode_dir.name} 的帧 {split_start}~{split_end}，追加为新 episode_{new_ep_idx:06d}")
+            st.rerun()
+    # 编辑日志查看与应用
+    with st.expander("编辑日志 (edit_log.jsonl)"):
+        ensure_log(dataset_root)
+        entries = read_log_entries(dataset_root)
+        st.write(f"共 {len(entries)} 条记录")
+        for i, e in enumerate(entries):
+            st.json(e)
+        if st.button("一键应用编辑日志"):
+            res = apply_edit_log(dataset_root, stop_on_error=True)
+            st.write(res)
+            st.success("日志应用完成，若无错误将按顺序执行所有变更")
+
+    with st.expander("序号重排序"):
+        # 新增：重排索引 UI
+        st.markdown("---")
+        st.write("重排 episode 索引")
+        reindex_start = st.number_input("起始索引 (reindex start)", min_value=0, value=0)
+        if st.button("重排索引并记录日志"):
+            from edit_sim_recorded_dataset import reindex_episodes
+            try:
+                reindex_episodes(dataset_root, index_start=int(reindex_start))
+                append_log_entry(dataset_root, {'op': 'reindex_episodes', 'start': int(reindex_start)})
+                st.success(f"已重排索引并记录日志，起始索引={reindex_start}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"重排失败: {e}")
+
+    # 一键检查数据一致性
+    with st.expander("一键检查数据一致性"):
+        if st.button("开始检查"):
+            report = []
+            episode_dirs = get_episode_dirs(dataset_root)
+            # 1. 检查 episode 索引
+            for idx, ep in enumerate(episode_dirs):
+                ep_idx = int(ep.name.split('_')[1])
+                meta_path = Path(ep) / "meta.jsonl"
+                if not meta_path.exists():
+                    report.append(f"{ep.name}: 缺少 meta.jsonl")
+                    continue
+                with open(meta_path, 'r') as f:
+                    lines = [json.loads(line) for line in f]
+                # 检查文件夹名和 meta 里的 episode_idx
+                for line in lines:
+                    if 'episode_idx' in line and line['episode_idx'] != ep_idx:
+                        report.append(f"{ep.name}: meta episode_idx {line['episode_idx']} != 文件夹索引 {ep_idx}")
+                if ep_idx != idx:
+                    report.append(f"{ep.name}: 文件夹索引 {ep_idx} 不连续，应为 {idx}")
+            # 2. 检查 frame_index、图片名、meta图片索引
+            for ep in episode_dirs:
+                meta_path = Path(ep) / "meta.jsonl"
+                if not meta_path.exists():
+                    continue
+                with open(meta_path, 'r') as f:
+                    lines = [json.loads(line) for line in f]
+                images_dir = Path(ep) / "images"
+                for i, line in enumerate(lines):
+                    # 检查 frame_index
+                    if 'frame_index' in line and line['frame_index'] != i:
+                        report.append(f"{ep.name}: meta frame_index {line['frame_index']} != {i}")
+                    # 检查图片名
+                    if images_dir.exists():
+                        for cam_dir in images_dir.iterdir():
+                            if cam_dir.is_dir():
+                                img_path = cam_dir / f"frame_{i:06d}.png"
+                                if not img_path.exists():
+                                    report.append(f"{ep.name}: {cam_dir.name} 缺少图片 frame_{i:06d}.png")
+                    # 检查 meta 里的图片索引字段
+                    def recursive_check_img(obj):
+                        if isinstance(obj, dict):
+                            for v in obj.values():
+                                recursive_check_img(v)
+                        elif isinstance(obj, list):
+                            for v in obj:
+                                recursive_check_img(v)
+                        elif isinstance(obj, str):
+                            m = re.findall(r"frame_(\d{6})\.png", obj)
+                            for frame_str in m:
+                                frame_idx = int(frame_str)
+                                if images_dir.exists():
+                                    found = False
+                                    for cam_dir in images_dir.iterdir():
+                                        if cam_dir.is_dir():
+                                            img_path = cam_dir / f"frame_{frame_idx:06d}.png"
+                                            if img_path.exists():
+                                                found = True
+                                                break
+                                    if not found:
+                                        report.append(f"{ep.name}: meta图片索引 {obj} 不存在实际图片")
+                    recursive_check_img(line)
+
+                # 3. 时间一致性检查：sensor timestamp 与帧 timestamp、以及相邻帧时间间隔
+                try:
+                    timestamps = [float(m.get('timestamp', 0.0)) for m in lines]
+                except Exception:
+                    timestamps = []
+                # 相邻帧间隔阈值（毫秒）
+                min_dt_s = 0.015
+                max_dt_s = 0.040
+                for i in range(1, len(timestamps)):
+                    dt = timestamps[i] - timestamps[i-1]
+                    if dt > max_dt_s or dt < min_dt_s:
+                        report.append(f"{ep.name}: 相邻帧时间间隔异常 frames {i-1}->{i}, dt={dt*1000:.1f} ms")
+
+            if not report:
+                st.success("所有检查均通过，无异常！")
+            else:
+                st.error("发现以下异常：")
+                for r in report:
+                    st.write(r)
+
+# streamlit run tools/edit_sim_recorded_dataset_gui.py
+if __name__ == '__main__':
+    main()
+

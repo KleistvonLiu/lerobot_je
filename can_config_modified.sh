@@ -3,9 +3,9 @@ set -Eeuo pipefail
 
 # 用法：
 #  单个设备：
-#    sudo ./can_config_modified.sh --right 1-11:1.0 --rate-right 1000000
+#    sudo ./can_config_modified.sh --right 1-6:1.0 --rate-right 1000000
 #  两个设备：
-#    sudo ./can_config_modified.sh --right 1-11:1.0 --left 1-13:1.0 --rate-right 1000000 --rate-left 1000000
+#    sudo ./can_config_modified.sh --right 1-6:1.0 --left 1-5:1.0 --rate-right 1000000 --rate-left 1000000
 #
 # 说明：
 #  --right         必填，can_right 的 USB 硬件地址（如 1-6:1.0）

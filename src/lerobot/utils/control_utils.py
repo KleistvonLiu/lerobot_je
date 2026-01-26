@@ -194,6 +194,12 @@ def init_keyboard_listener():
     events["rerecord_episode"] = False
     events["stop_recording"] = False
     events["stop_preparing"] = False
+    # New flags for two-step right-arrow behavior:
+    # - first right arrow press requests finalization of current episode (wait for saves)
+    # - second right arrow press proceeds to start the next episode
+    events["finalize_requested"] = False
+    events["proceed_episode"] = False
+    events["awaiting_next"] = False
 
     if is_headless():
         logging.warning(
@@ -208,8 +214,16 @@ def init_keyboard_listener():
     def on_press(key):
         try:
             if key == keyboard.Key.right:
-                print("Right arrow key pressed. Exiting loop...")
-                events["exit_early"] = True
+                # If we're awaiting the user's confirmation to proceed to next episode,
+                # treat this press as the 'proceed' action. Otherwise request finalization
+                # of the current episode (stop recording and wait for saves).
+                if events.get("awaiting_next"):
+                    print("Right arrow pressed. Proceeding to next episode...")
+                    events["proceed_episode"] = True
+                else:
+                    print("Right arrow key pressed. Stopping recording and finalizing...")
+                    events["exit_early"] = True
+                    events["finalize_requested"] = True
             elif key == keyboard.Key.left:
                 print("Left arrow key pressed. Exiting loop and rerecord the last episode...")
                 events["rerecord_episode"] = True

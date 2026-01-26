@@ -163,9 +163,8 @@ python -m lerobot.scripts.visualize_dataset \
 or from a dataset in a local folder with the `root` option and the `--local-files-only` (in the following case the dataset will be searched for in `./my_local_data_dir/lerobot/pusht`)
 ```bash
 python -m lerobot.scripts.visualize_dataset \
-    --repo-id lerobot/pusht \
-    --root ./my_local_data_dir \
-    --local-files-only 1 \
+    --repo-id lerobot/test \
+    --root /home/test/jemotor/jedata/test_0927 \
     --episode-index 0
 ```
 
@@ -410,3 +409,70 @@ primaryClass={cs.RO}
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=huggingface/lerobot&type=Timeline)](https://star-history.com/#huggingface/lerobot&Timeline)
+
+pip install streamlit
+streamlit run tools/edit_sim_recorded_dataset_gui.py
+
+python -m lerobot.scripts.visualize_dataset \
+    --repo-id lerobot/test \
+    --root /home/agx/jedata/wrapper \
+    --episode-index 0
+
+
+python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_follower    --robot1.port=can_right            --robot1.id=right            --teleop.type=aloha_agilex_leader            --teleop.port=/dev/tty.usbmodem58760431551            --teleop.id=blue        --robot1.cameras="{camera0: {type: orbbec, index_or_path: CP02653000ZL, width: 640, height: 480, fps: 30},camera1: {type: orbbec, index_or_path: CP02653000YJ, width: 640, height: 480, fps: 30}, camera2: {type: orbbec, index_or_path: CP02653000YR, width: 640, height: 480, fps: 30}, camera3: {type: orbbec, index_or_path: CP02653000R4, width: 640, height: 480, fps: 30}}"        --dataset.single_task="Pick up the PCB board from the green conveyor belt and place it into the yellow container." --dataset.root="/home/test/jemotor/jedata/test_1112/" --dataset.repo_id="lerobot/test" --dataset.episode_time=600
+
+
+每次重启后只需要做一遍：
+cd ~/jemotor/lerobot_je
+sudo ./can_config_modified.sh --right 1-6:1.0 --left 1-5:1.0 --rate-right 1000000 --rate-left 1000000
+sudo密码是 jemotor2025
+
+python -m lerobot.record_aloha_agilex_single_arm    --robot1.type=aloha_agilex_follower    --robot1.port=can_right    \
+        --robot1.id=right    \
+        --teleop.type=aloha_agilex_leader    \
+        --teleop.port=/dev/tty.usbmodem58760431551    \
+        --teleop.id=blue\
+        --robot1.cameras="{camera0: {type: orbbec, index_or_path: CP02653000ZL, width: 640, height: 480, fps: 30},camera1: {type: orbbec, index_or_path: CP02653000YJ, width: 640, height: 480, fps: 30}, camera2: {type: orbbec, index_or_path: CP02653000YR, width: 640, height: 480, fps: 30}, camera3: {type: orbbec, index_or_path: CP02653000R4, width: 640, height: 480, fps: 30}}"\
+        --dataset.single_task="Pick up the PCB board from the green conveyor belt and place it into the yellow container."    \
+        --robot1.tactiles="{
+        tactile1:{
+          type: serial,
+          port: "/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0",
+          width: 8,
+          height: 4,
+          frame_size: 70,
+          header: [255, 132]
+          }
+        }" \
+        --dataset.repo_id="lerobot/test"    \
+        --dataset.root="/home/test/jemotor/jedata/test_0928"    \
+        --dataset.episode_time_s=1000    \
+        --dataset.reset_time_s=2    \
+        --dataset.video_encoding_batch_size=1    \
+        --dataset.num_episodes=1    \
+        --dataset.video=True     \
+        --resume=True
+
+wrist CP02653000YJ
+base CP02653000ZL
+left pole CP02653000YR
+right back CP02653000R4
+
+python -m lerobot.scripts.visualize_dataset \
+    --repo-id lerobot/test \
+    --root /home/kleist/Documents/Database/test_1125_test/ \
+    --episode-index 250
+
+
+
+
+python -m lerobot.replay_aloha_agilex_single_arm\
+    --robot1.type=aloha_agilex_follower\
+    --robot1.port=can_right\
+    --robot1.id=right\
+    --dataset.repo_id="lerobot/test"\
+    --dataset.episode=21\
+    --dataset.root="/home/test/jemotor/jedata/test_0928"\
+    --replay_mode=1
+
+python3 ./src/lerobot/plot_positions.py /media/kleist/NewNTFS1/test_1112 --start-episode-idx 313
