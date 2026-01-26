@@ -37,6 +37,7 @@ def convert_expand_to_lerobot_batch(
     episode_index_map = {}
     first_ep_idx = None
     last_ep_idx = None
+    gripper_dim = None
     for idx, episode_dir in enumerate(episode_dirs):
         if resume and dataset is None:
             # 仅在第一次循环时加载已有数据集
@@ -45,6 +46,11 @@ def convert_expand_to_lerobot_batch(
                 root=lerobot_root,
             )
             next_episode_index = dataset.meta.total_episodes
+            gripper_feature = dataset.meta.features.get("gripper") if dataset is not None else None
+            if gripper_feature is not None:
+                shape = gripper_feature.get("shape", []) if isinstance(gripper_feature, dict) else getattr(gripper_feature, "shape", [])
+                if shape:
+                    gripper_dim = shape[0]
         # 读取 meta.jsonl
         features_path = episode_dir / target_meta_file_name
         with open(features_path, "r") as f:
@@ -152,6 +158,17 @@ def convert_expand_to_lerobot_batch(
                 features["action"] = {"dtype": "float32", "shape": [total_joints]}
                 # 加一个feature: effort，暂时不去除state里的effort
                 features["effort"] = {"dtype": "float32", "shape": [total_joints]}
+                # gripper（如有），按与 position 并行的维度保存
+                first_grippers = []
+                for j in first_joints:
+                    g_val = j.get("gripper")
+                    if g_val is None:
+                        continue
+                    g_arr = np.array(g_val, dtype=np.float32).reshape(-1)
+                    first_grippers.extend(g_arr.tolist())
+                if first_grippers:
+                    gripper_dim = len(first_grippers)
+                    features["gripper"] = {"dtype": "float32", "shape": [gripper_dim]}
             # 如果存在 observation dict，兼容展开其他字段
             if len(features_list) > 0 and "observation" in features_list[0]:
                 obs_flat = flatten_dict(features_list[0]["observation"], parent_key="observation")
@@ -223,10 +240,15 @@ def convert_expand_to_lerobot_batch(
                 positions = []
                 velocities = []
                 efforts = []
+                grippers = []
                 for j in joints_list:
                     pos = list(j.get("position", []))
                     vel = list(j.get("velocity", []))
                     eff = list(j.get("effort", []))
+                    g_val = j.get("gripper")
+                    if g_val is not None:
+                        g_arr = np.array(g_val, dtype=np.float32).reshape(-1)
+                        grippers.extend(g_arr.tolist())
                     positions.extend(pos)
                     velocities.extend(vel)
                     efforts.extend(eff)
@@ -236,9 +258,19 @@ def convert_expand_to_lerobot_batch(
                 meta["observation.state"] = obs_state
                 meta["action"] = act
                 meta["effort"] = np.array(efforts, dtype=np.float32)
+                if grippers:
+                    if gripper_dim is not None and len(grippers) != gripper_dim:
+                        raise ValueError(f"episode {episode_index} frame {i} gripper dim mismatch: expected {gripper_dim}, got {len(grippers)}")
+                    meta["gripper"] = np.array(grippers, dtype=np.float32)
             # tactiles（如有）
             if "tactiles" in features_list[i]:
                 meta["tactiles"] = features_list[i]["tactiles"]
+            # gripper（顶层字段，若未在 joints 中解析）
+            if "gripper" in features_list[i] and "gripper" not in meta:
+                g_arr = np.array(features_list[i]["gripper"], dtype=np.float32).reshape(-1)
+                if gripper_dim is not None and len(g_arr) != gripper_dim:
+                    raise ValueError(f"episode {episode_index} frame {i} gripper dim mismatch: expected {gripper_dim}, got {len(g_arr)}")
+                meta["gripper"] = g_arr
             # 兼容原有 observation/action 字段
             if "action" in features_list[i] and "action" not in meta:
                 meta["action"] = features_list[i]["action"]
@@ -289,7 +321,7 @@ def convert_expand_to_lerobot_batch(
         dataset.save_episode(episode_data=episode_data, encode_videos=False)
         t5 = time.time()
         print(f"[INFO] Saved episode {episode_index} to {lerobot_root}，耗时: {t5-t4:.3f}s")
-    exit(1)
+    # exit(1)
     # 分批顺序编码视频
     print(f"[INFO] 开始分批编码视频，每批 {batch_encode_num} 个episode")
     for start in range(first_ep_idx, last_ep_idx + 1, batch_encode_num):
@@ -335,9 +367,9 @@ def convert_expand_to_lerobot_batch(
 
 if __name__ == "__main__":
     # 示例用法
-    lerobot_root = "/home/kleist/Documents/Database/test_1128_filtered/"
-    episodes_root = "/media/kleist/NewNTFS1/test_1128_edited/"  # 传入包含多个episode_xxxxxx的根目录
+    lerobot_root = "/home/kleist/Documents/Database/test_0126/"
+    episodes_root = "/home/kleist/jemotor/log1/"  # 传入包含多个episode_xxxxxx的根目录
     task = "Pick up the PCB board from the conveyor belt and place it into the yellow container."
     resume = False
-    target_meta_file_name = "meta_effort_filtered.jsonl"
+    target_meta_file_name = "meta.jsonl"
     convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume,target_meta_file_name = target_meta_file_name)
