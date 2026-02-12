@@ -33,6 +33,71 @@ def convert_expand_to_lerobot_batch(
         out[:arr.size] = arr
         return out
 
+    def split_joint_entries_by_topic(joints):
+        """按 topic 将 joints 划分为 state 与 action(cmd) 两组。
+
+        兼容旧格式（没有 topic）：
+        - 若全部 joints 都无 topic，则两组都返回原 joints（保持历史行为）。
+        - 若仅有一组存在，则另一组回退到同一组，避免 action/state 缺失。
+        """
+        state_joints = []
+        action_joints = []
+        uncategorized = []
+
+        for j in joints:
+            topic = str(j.get("topic", "")).lower()
+            is_state = ("state" in topic) or ("states" in topic)
+            is_action = ("cmd" in topic) or ("action" in topic)
+            if is_state and not is_action:
+                state_joints.append(j)
+            elif is_action and not is_state:
+                action_joints.append(j)
+            elif is_state and is_action:
+                # 极端命名场景下优先视作 action
+                action_joints.append(j)
+            else:
+                uncategorized.append(j)
+
+        # 对有 topic 的分组按 topic 排序，保证跨帧拼接顺序稳定
+        state_joints = sorted(state_joints, key=lambda x: str(x.get("topic", "")))
+        action_joints = sorted(action_joints, key=lambda x: str(x.get("topic", "")))
+
+        if not state_joints and not action_joints:
+            state_joints = list(uncategorized)
+            action_joints = list(uncategorized)
+        else:
+            if not state_joints:
+                state_joints = list(action_joints) if action_joints else list(uncategorized)
+            if not action_joints:
+                action_joints = list(state_joints) if state_joints else list(uncategorized)
+
+        return state_joints, action_joints
+
+    def extract_joint_arrays(joints):
+        positions = []
+        velocities = []
+        efforts = []
+        grippers = []
+        for j in joints:
+            positions.extend(np.array(j.get("position", []), dtype=np.float32).reshape(-1).tolist())
+            velocities.extend(np.array(j.get("velocity", []), dtype=np.float32).reshape(-1).tolist())
+            efforts.extend(np.array(j.get("effort", []), dtype=np.float32).reshape(-1).tolist())
+            g_val = j.get("gripper")
+            if g_val is not None:
+                grippers.extend(np.array(g_val, dtype=np.float32).reshape(-1).tolist())
+        return positions, velocities, efforts, grippers
+
+    def extract_topicwise_position_gripper(joints):
+        """按 topic 顺序拼接 [topic.position..., topic.gripper...]。"""
+        pos_with_gripper = []
+        for j in joints:
+            pos = np.array(j.get("position", []), dtype=np.float32).reshape(-1).tolist()
+            g_val = j.get("gripper")
+            grip = np.array(g_val, dtype=np.float32).reshape(-1).tolist() if g_val is not None else []
+            pos_with_gripper.extend(pos)
+            pos_with_gripper.extend(grip)
+        return pos_with_gripper
+
     t0 = time.time()
     episodes_root = Path(episodes_root)
     # 如果不是 resume 模式但目标数据目录已存在，立刻报错以避免覆盖已有数据
@@ -50,8 +115,11 @@ def convert_expand_to_lerobot_batch(
     episode_index_map = {}
     first_ep_idx = None
     last_ep_idx = None
-    gripper_dim = None
+    gripper_dim = None  # 顶层 gripper 总维度（state_gripper + action_gripper）
+    state_gripper_dim = None
+    action_gripper_dim = None
     joint_dim = None
+    action_joint_dim = None
     action_dim = None
     state_dim = None
     for idx, episode_dir in enumerate(episode_dirs):
@@ -77,26 +145,108 @@ def convert_expand_to_lerobot_batch(
                 shape = state_feature.get("shape", []) if isinstance(state_feature, dict) else getattr(state_feature, "shape", [])
                 if shape:
                     state_dim = shape[0]
+
+            # 尝试解出 state_gripper_dim / action_gripper_dim（若总 gripper 维度已知）
+            if state_dim is not None and action_dim is not None and gripper_dim is not None:
+                solved = None
+                for cand_state_g in range(gripper_dim + 1):
+                    if state_dim < cand_state_g or (state_dim - cand_state_g) % 3 != 0:
+                        continue
+                    cand_joint = (state_dim - cand_state_g) // 3
+                    cand_action_g = gripper_dim - cand_state_g
+                    cand_action_joint = action_dim - cand_action_g
+                    if cand_action_joint < 0:
+                        continue
+                    # 优先选择 state/action 关节维度一致的组合
+                    score = 0 if cand_action_joint == cand_joint else 1
+                    if solved is None or score < solved[0]:
+                        solved = (score, cand_state_g, cand_action_g, cand_joint, cand_action_joint)
+                if solved is not None:
+                    _, cand_state_g, cand_action_g, cand_joint, cand_action_joint = solved
+                    state_gripper_dim = cand_state_g
+                    action_gripper_dim = cand_action_g
+                    joint_dim = cand_joint
+                    action_joint_dim = cand_action_joint
+
             if joint_dim is None and state_dim is not None:
-                if gripper_dim is not None and state_dim >= gripper_dim and (state_dim - gripper_dim) % 3 == 0:
-                    joint_dim = (state_dim - gripper_dim) // 3
-                elif state_dim % 3 == 0:
+                if state_dim % 3 == 0:
                     joint_dim = state_dim // 3
-            if joint_dim is None and action_dim is not None:
-                if gripper_dim is not None and action_dim >= gripper_dim:
-                    joint_dim = action_dim - gripper_dim
+            if action_joint_dim is None and action_dim is not None:
+                if action_gripper_dim is not None and action_dim >= action_gripper_dim:
+                    action_joint_dim = action_dim - action_gripper_dim
                 else:
-                    joint_dim = action_dim
-            if action_dim is None and joint_dim is not None:
-                action_dim = joint_dim + (gripper_dim or 0)
+                    action_joint_dim = action_dim
+            if joint_dim is None and action_joint_dim is not None:
+                joint_dim = action_joint_dim
+            if action_joint_dim is None and joint_dim is not None:
+                action_joint_dim = joint_dim
+            if action_gripper_dim is None and action_dim is not None and action_joint_dim is not None and action_dim >= action_joint_dim:
+                action_gripper_dim = action_dim - action_joint_dim
+            if state_gripper_dim is None and state_dim is not None and joint_dim is not None and state_dim >= joint_dim * 3:
+                state_gripper_dim = state_dim - joint_dim * 3
+            if action_dim is None and action_joint_dim is not None:
+                action_dim = action_joint_dim + (action_gripper_dim or 0)
             if state_dim is None and joint_dim is not None:
-                state_dim = joint_dim * 3 + (gripper_dim or 0)
+                state_dim = joint_dim * 3 + (state_gripper_dim or 0)
+            if gripper_dim is None:
+                total_gripper_dim = (state_gripper_dim or 0) + (action_gripper_dim or 0)
+                gripper_dim = total_gripper_dim if total_gripper_dim > 0 else None
         # 读取 meta.jsonl
         features_path = episode_dir / target_meta_file_name
         with open(features_path, "r") as f:
             features_list = [json.loads(line) for line in f]
         batch_size = len(features_list)
         print(f"[INFO] [{episode_dir.name}] {target_meta_file_name} 读取完成，帧数: {batch_size}")
+        # 打印本 episode 中检测到的 joints 相关 topic（去重）
+        joint_topics = sorted(
+            {
+                str(j.get("topic", "")).strip()
+                for frame in features_list
+                for j in frame.get("joints", [])
+                if isinstance(j, dict) and str(j.get("topic", "")).strip()
+            }
+        )
+        if joint_topics:
+            state_topics = [t for t in joint_topics if ("state" in t.lower()) or ("states" in t.lower())]
+            action_topics = [t for t in joint_topics if ("cmd" in t.lower()) or ("action" in t.lower())]
+            print(f"[INFO] [{episode_dir.name}] 检测到 joints topics: {joint_topics}")
+            print(f"[INFO] [{episode_dir.name}] state topics: {state_topics}")
+            print(f"[INFO] [{episode_dir.name}] action topics: {action_topics}")
+        else:
+            print(f"[INFO] [{episode_dir.name}] 未检测到 joints topics")
+        # 尝试从当前 episode 的首帧 joints 推断 topic 维度（用于首次创建或缺失维度场景）
+        if len(features_list) > 0 and "joints" in features_list[0] and features_list[0]["joints"]:
+            first_joints_for_dim = features_list[0]["joints"]
+            state_joints_for_dim, action_joints_for_dim = split_joint_entries_by_topic(first_joints_for_dim)
+            inferred_joint_dim = sum(len(j.get("position", [])) for j in state_joints_for_dim)
+            inferred_action_joint_dim = sum(len(j.get("position", [])) for j in action_joints_for_dim)
+            _, _, _, inferred_state_grippers = extract_joint_arrays(state_joints_for_dim)
+            _, _, _, inferred_action_grippers = extract_joint_arrays(action_joints_for_dim)
+            inferred_state_gripper_dim = len(inferred_state_grippers) if inferred_state_grippers else None
+            inferred_action_gripper_dim = len(inferred_action_grippers) if inferred_action_grippers else None
+
+            if joint_dim is None and inferred_joint_dim > 0:
+                joint_dim = inferred_joint_dim
+            if action_joint_dim is None and inferred_action_joint_dim > 0:
+                action_joint_dim = inferred_action_joint_dim
+            if state_gripper_dim is None and inferred_state_gripper_dim is not None:
+                state_gripper_dim = inferred_state_gripper_dim
+            if action_gripper_dim is None and inferred_action_gripper_dim is not None:
+                action_gripper_dim = inferred_action_gripper_dim
+
+            if action_joint_dim is None and joint_dim is not None:
+                action_joint_dim = joint_dim
+            if action_gripper_dim is None and inferred_action_gripper_dim is None and action_dim is not None and action_joint_dim is not None:
+                maybe_action_g = action_dim - action_joint_dim
+                if maybe_action_g >= 0:
+                    action_gripper_dim = maybe_action_g
+            if action_dim is None and action_joint_dim is not None:
+                action_dim = action_joint_dim + (action_gripper_dim or 0)
+            if state_dim is None and joint_dim is not None:
+                state_dim = joint_dim * 3 + (state_gripper_dim or 0)
+            if gripper_dim is None:
+                total_gripper_dim = (state_gripper_dim or 0) + (action_gripper_dim or 0)
+                gripper_dim = total_gripper_dim if total_gripper_dim > 0 else None
         # 相机列表由 meta.jsonl 中的键决定：以 "cam" 开头的字段被视为相机属性（如 camera_01_color_image_raw）
         # 不再直接从 images/ 目录枚举相机。保持排序以稳定输出顺序。
         camera_names = sorted([k for k in (features_list[0].keys() if len(features_list)>0 else []) if str(k).startswith('cam')])
@@ -189,29 +339,46 @@ def convert_expand_to_lerobot_batch(
             features = {}
             # 如果 frames 中包含 joints，则构造 observation.state 与 action
             if len(features_list) > 0 and "joints" in features_list[0] and features_list[0]["joints"]:
-                # 计算总关节数（所有 joint entries 的 position 长度之和）
                 first_joints = features_list[0]["joints"]
-                total_joints = sum(len(j.get("position", [])) for j in first_joints)
-                joint_dim = total_joints
-                # gripper（如有），按与 position 并行的维度保存
-                first_grippers = []
-                for j in first_joints:
-                    g_val = j.get("gripper")
-                    if g_val is None:
-                        continue
-                    g_arr = np.array(g_val, dtype=np.float32).reshape(-1)
-                    first_grippers.extend(g_arr.tolist())
-                if first_grippers:
-                    gripper_dim = len(first_grippers)
+                state_joints, action_joints = split_joint_entries_by_topic(first_joints)
+
+                # state/action 维度分别由对应 topic 组决定
+                total_state_joints = sum(len(j.get("position", [])) for j in state_joints)
+                total_action_joints = sum(len(j.get("position", [])) for j in action_joints)
+
+                # 兜底：若一侧为空，则复用另一侧维度
+                if total_state_joints == 0 and total_action_joints > 0:
+                    total_state_joints = total_action_joints
+                if total_action_joints == 0 and total_state_joints > 0:
+                    total_action_joints = total_state_joints
+
+                joint_dim = total_state_joints
+                action_joint_dim = total_action_joints
+
+                # state/action 的 gripper 维度分开推断，避免 topic 数量不同导致截断
+                _, _, _, first_state_grippers = extract_joint_arrays(state_joints)
+                _, _, _, first_action_grippers = extract_joint_arrays(action_joints)
+                if first_state_grippers:
+                    state_gripper_dim = len(first_state_grippers)
+                if first_action_grippers:
+                    action_gripper_dim = len(first_action_grippers)
+                elif first_state_grippers and action_gripper_dim is None:
+                    # 回退：若 action topic 无 gripper，沿用 state gripper 维度
+                    action_gripper_dim = len(first_state_grippers)
+
+                total_gripper_dim = (state_gripper_dim or 0) + (action_gripper_dim or 0)
+                gripper_dim = total_gripper_dim if total_gripper_dim > 0 else None
+                if gripper_dim is not None:
                     features["gripper"] = {"dtype": "float32", "shape": [gripper_dim]}
-                action_dim = total_joints + (gripper_dim or 0)
-                state_dim = total_joints * 3 + (gripper_dim or 0)
+
+                action_dim = action_joint_dim + (action_gripper_dim or 0)
+                state_dim = joint_dim * 3 + (state_gripper_dim or 0)
                 # observation.state 包含 positions, velocities, efforts 串联
                 features["observation.state"] = {"dtype": "float32", "shape": [state_dim]}
                 # action = [position..., gripper...]（如有 gripper）
                 features["action"] = {"dtype": "float32", "shape": [action_dim]}
                 # 加一个feature: effort，暂时不去除state里的effort
-                features["effort"] = {"dtype": "float32", "shape": [total_joints]}
+                features["effort"] = {"dtype": "float32", "shape": [joint_dim]}
             # 如果存在 observation dict，兼容展开其他字段
             if len(features_list) > 0 and "observation" in features_list[0]:
                 obs_flat = flatten_dict(features_list[0]["observation"], parent_key="observation")
@@ -282,45 +449,75 @@ def convert_expand_to_lerobot_batch(
             # joints/tactiles（如有）——将 joints 的 position/velocity/effort 拼接到 observation.state；action 为 position
             joints_list = features_list[i].get("joints", []) if i < len(features_list) else []
             if joints_list:
-                positions = []
-                velocities = []
-                efforts = []
-                grippers = []
-                for j in joints_list:
-                    pos = np.array(j.get("position", []), dtype=np.float32).reshape(-1).tolist()
-                    vel = np.array(j.get("velocity", []), dtype=np.float32).reshape(-1).tolist()
-                    eff = np.array(j.get("effort", []), dtype=np.float32).reshape(-1).tolist()
-                    g_val = j.get("gripper")
-                    if g_val is not None:
-                        g_arr = np.array(g_val, dtype=np.float32).reshape(-1)
-                        grippers.extend(g_arr.tolist())
-                    positions.extend(pos)
-                    velocities.extend(vel)
-                    efforts.extend(eff)
-                # observation.state = [positions..., velocities..., efforts...]
-                pos_arr = to_fixed_float32(positions, joint_dim)
-                vel_arr = to_fixed_float32(velocities, joint_dim)
-                eff_arr = to_fixed_float32(efforts, joint_dim)
-                if gripper_dim is not None:
-                    gripper_arr = to_fixed_float32(grippers, gripper_dim)
-                elif grippers:
-                    gripper_arr = np.array(grippers, dtype=np.float32)
-                else:
-                    gripper_arr = None
-                if gripper_arr is not None:
-                    obs_state = np.concatenate((pos_arr, gripper_arr, vel_arr, eff_arr)).astype(np.float32)
-                else:
+                state_joints, action_joints = split_joint_entries_by_topic(joints_list)
+                state_gripper_arr = None
+                action_gripper_arr = None
+
+                # states topic -> observation.state
+                state_positions, state_velocities, state_efforts, state_grippers = extract_joint_arrays(state_joints)
+                if state_positions or state_velocities or state_efforts or state_grippers:
+                    state_pos_gripper = extract_topicwise_position_gripper(state_joints)
+                    target_state_pos_gripper_dim = None
+                    if joint_dim is not None:
+                        target_state_pos_gripper_dim = joint_dim + (state_gripper_dim or 0)
+                    pos_arr = to_fixed_float32(state_pos_gripper, target_state_pos_gripper_dim)
+                    vel_arr = to_fixed_float32(state_velocities, joint_dim)
+                    eff_arr = to_fixed_float32(state_efforts, joint_dim)
+                    if state_gripper_dim is not None:
+                        state_gripper_arr = to_fixed_float32(state_grippers, state_gripper_dim)
+                    elif state_grippers:
+                        state_gripper_arr = np.array(state_grippers, dtype=np.float32)
+                    else:
+                        state_gripper_arr = None
                     obs_state = np.concatenate((pos_arr, vel_arr, eff_arr)).astype(np.float32)
-                act = np.concatenate((pos_arr, gripper_arr)).astype(np.float32) if gripper_arr is not None else pos_arr
-                meta["observation.state"] = obs_state
-                meta["action"] = act
-                meta["effort"] = eff_arr
-                if gripper_arr is not None:
-                    meta["gripper"] = gripper_arr
-                if action_dim is None:
-                    action_dim = int(act.shape[0])
-                if state_dim is None:
-                    state_dim = int(obs_state.shape[0])
+                    meta["observation.state"] = obs_state
+                    meta["effort"] = eff_arr
+                    if state_gripper_dim is None and state_gripper_arr is not None:
+                        state_gripper_dim = int(state_gripper_arr.shape[0])
+                    if state_dim is None:
+                        state_dim = int(obs_state.shape[0])
+
+                # cmd/action topic -> action
+                action_positions, _, _, action_grippers = extract_joint_arrays(action_joints)
+                if action_positions or action_grippers:
+                    action_pos_gripper = extract_topicwise_position_gripper(action_joints)
+                    target_action_dim = None
+                    if action_joint_dim is not None:
+                        target_action_dim = action_joint_dim + (action_gripper_dim or 0)
+                    elif joint_dim is not None:
+                        target_action_dim = joint_dim + (action_gripper_dim or 0)
+                    action_pos_arr = to_fixed_float32(action_pos_gripper, target_action_dim)
+                    if action_gripper_dim is not None:
+                        action_gripper_arr = to_fixed_float32(action_grippers, action_gripper_dim)
+                    elif action_grippers:
+                        action_gripper_arr = np.array(action_grippers, dtype=np.float32)
+                    else:
+                        action_gripper_arr = None
+                    act = action_pos_arr.astype(np.float32)
+                    meta["action"] = act
+                    if action_gripper_dim is None and action_gripper_arr is not None:
+                        action_gripper_dim = int(action_gripper_arr.shape[0])
+                    if action_dim is None:
+                        action_dim = int(act.shape[0])
+
+                # 顶层 gripper = [state_gripper..., action_gripper...]
+                if state_gripper_arr is None and state_gripper_dim is not None:
+                    state_gripper_arr = np.zeros((state_gripper_dim,), dtype=np.float32)
+                if action_gripper_arr is None and action_gripper_dim is not None:
+                    action_gripper_arr = np.zeros((action_gripper_dim,), dtype=np.float32)
+                gripper_parts = []
+                if state_gripper_arr is not None:
+                    gripper_parts.append(state_gripper_arr)
+                if action_gripper_arr is not None:
+                    gripper_parts.append(action_gripper_arr)
+                if gripper_parts:
+                    meta["gripper"] = (
+                        np.concatenate(gripper_parts).astype(np.float32)
+                        if len(gripper_parts) > 1
+                        else gripper_parts[0].astype(np.float32)
+                    )
+                    if gripper_dim is None:
+                        gripper_dim = int(meta["gripper"].shape[0])
             # tactiles（如有）
             if "tactiles" in features_list[i]:
                 meta["tactiles"] = features_list[i]["tactiles"]
@@ -328,11 +525,15 @@ def convert_expand_to_lerobot_batch(
             if "gripper" in features_list[i] and "gripper" not in meta:
                 g_arr = to_fixed_float32(features_list[i]["gripper"], gripper_dim)
                 meta["gripper"] = g_arr
+            if "gripper" in meta and gripper_dim is not None:
+                meta["gripper"] = to_fixed_float32(meta["gripper"], gripper_dim)
             if gripper_dim is not None and "gripper" not in meta:
                 meta["gripper"] = np.zeros((gripper_dim,), dtype=np.float32)
             # 兼容原有 observation/action 字段
             if "action" in features_list[i] and "action" not in meta:
-                target_action_dim = action_dim if action_dim is not None else joint_dim
+                target_action_dim = action_dim
+                if target_action_dim is None and action_joint_dim is not None:
+                    target_action_dim = action_joint_dim + (action_gripper_dim or 0)
                 meta["action"] = to_fixed_float32(features_list[i]["action"], target_action_dim)
             if "observation" in features_list[i]:
                 obs_flat = flatten_dict(features_list[i]["observation"], parent_key="observation")
@@ -342,7 +543,7 @@ def convert_expand_to_lerobot_batch(
                     else:
                         target_state_dim = state_dim
                         if target_state_dim is None and joint_dim is not None:
-                            target_state_dim = joint_dim * 3 + (gripper_dim or 0)
+                            target_state_dim = joint_dim * 3 + (state_gripper_dim or 0)
                         obs_flat["observation.state"] = to_fixed_float32(obs_flat["observation.state"], target_state_dim)
                 meta.update(obs_flat)
             frames.append(meta)
@@ -439,10 +640,10 @@ def convert_expand_to_lerobot_batch(
 
 if __name__ == "__main__":
     # 示例用法
-    lerobot_root = "/home/kleist/Documents/Database/test_0207_gripper/"
-    episodes_root = "/media/kleist/NewNTFS/0207_log/"  # 传入包含多个episode_xxxxxx的根目录
+    output_data_path = "/home/kleist/Documents/Database/test_0212_temp/"
+    input_data_path = "/media/kleist/NewNTFS/test_0212_temp2/"  # 传入包含多个episode_xxxxxx的根目录
     task = "Pick up the PCB board from the conveyor belt and place it into the yellow container."
     resume = False
     encode_videos = False
     target_meta_file_name = "meta.jsonl"
-    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume,target_meta_file_name = target_meta_file_name, encode_videos = encode_videos)
+    convert_expand_to_lerobot_batch(input_data_path, output_data_path, task, resume=resume,target_meta_file_name = target_meta_file_name, encode_videos = encode_videos)
