@@ -17,9 +17,22 @@ def convert_expand_to_lerobot_batch(
     fps=30,
     use_videos=True,
     batch_encode_num=5,  # 新增参数，控制每次并发编码多少个episode
+    encode_videos=True,  # 控制是否执行分批视频编码
     resume = False,
     target_meta_file_name = "meta.jsonl"
 ):
+    def to_fixed_float32(values, expected_dim):
+        arr = np.array(values, dtype=np.float32).reshape(-1)
+        if expected_dim is None:
+            return arr
+        if arr.size == expected_dim:
+            return arr
+        if arr.size > expected_dim:
+            return arr[:expected_dim]
+        out = np.zeros((expected_dim,), dtype=np.float32)
+        out[:arr.size] = arr
+        return out
+
     t0 = time.time()
     episodes_root = Path(episodes_root)
     # 如果不是 resume 模式但目标数据目录已存在，立刻报错以避免覆盖已有数据
@@ -38,6 +51,9 @@ def convert_expand_to_lerobot_batch(
     first_ep_idx = None
     last_ep_idx = None
     gripper_dim = None
+    joint_dim = None
+    action_dim = None
+    state_dim = None
     for idx, episode_dir in enumerate(episode_dirs):
         if resume and dataset is None:
             # 仅在第一次循环时加载已有数据集
@@ -51,6 +67,30 @@ def convert_expand_to_lerobot_batch(
                 shape = gripper_feature.get("shape", []) if isinstance(gripper_feature, dict) else getattr(gripper_feature, "shape", [])
                 if shape:
                     gripper_dim = shape[0]
+            action_feature = dataset.meta.features.get("action") if dataset is not None else None
+            if action_feature is not None:
+                shape = action_feature.get("shape", []) if isinstance(action_feature, dict) else getattr(action_feature, "shape", [])
+                if shape:
+                    action_dim = shape[0]
+            state_feature = dataset.meta.features.get("observation.state") if dataset is not None else None
+            if state_feature is not None:
+                shape = state_feature.get("shape", []) if isinstance(state_feature, dict) else getattr(state_feature, "shape", [])
+                if shape:
+                    state_dim = shape[0]
+            if joint_dim is None and state_dim is not None:
+                if gripper_dim is not None and state_dim >= gripper_dim and (state_dim - gripper_dim) % 3 == 0:
+                    joint_dim = (state_dim - gripper_dim) // 3
+                elif state_dim % 3 == 0:
+                    joint_dim = state_dim // 3
+            if joint_dim is None and action_dim is not None:
+                if gripper_dim is not None and action_dim >= gripper_dim:
+                    joint_dim = action_dim - gripper_dim
+                else:
+                    joint_dim = action_dim
+            if action_dim is None and joint_dim is not None:
+                action_dim = joint_dim + (gripper_dim or 0)
+            if state_dim is None and joint_dim is not None:
+                state_dim = joint_dim * 3 + (gripper_dim or 0)
         # 读取 meta.jsonl
         features_path = episode_dir / target_meta_file_name
         with open(features_path, "r") as f:
@@ -152,12 +192,7 @@ def convert_expand_to_lerobot_batch(
                 # 计算总关节数（所有 joint entries 的 position 长度之和）
                 first_joints = features_list[0]["joints"]
                 total_joints = sum(len(j.get("position", [])) for j in first_joints)
-                # observation.state 包含 positions, velocities, efforts 串联
-                features["observation.state"] = {"dtype": "float32", "shape": [total_joints * 3]}
-                # action 使用所有 joint 的 position 串联
-                features["action"] = {"dtype": "float32", "shape": [total_joints]}
-                # 加一个feature: effort，暂时不去除state里的effort
-                features["effort"] = {"dtype": "float32", "shape": [total_joints]}
+                joint_dim = total_joints
                 # gripper（如有），按与 position 并行的维度保存
                 first_grippers = []
                 for j in first_joints:
@@ -169,6 +204,14 @@ def convert_expand_to_lerobot_batch(
                 if first_grippers:
                     gripper_dim = len(first_grippers)
                     features["gripper"] = {"dtype": "float32", "shape": [gripper_dim]}
+                action_dim = total_joints + (gripper_dim or 0)
+                state_dim = total_joints * 3 + (gripper_dim or 0)
+                # observation.state 包含 positions, velocities, efforts 串联
+                features["observation.state"] = {"dtype": "float32", "shape": [state_dim]}
+                # action = [position..., gripper...]（如有 gripper）
+                features["action"] = {"dtype": "float32", "shape": [action_dim]}
+                # 加一个feature: effort，暂时不去除state里的effort
+                features["effort"] = {"dtype": "float32", "shape": [total_joints]}
             # 如果存在 observation dict，兼容展开其他字段
             if len(features_list) > 0 and "observation" in features_list[0]:
                 obs_flat = flatten_dict(features_list[0]["observation"], parent_key="observation")
@@ -181,6 +224,8 @@ def convert_expand_to_lerobot_batch(
                     if dtype in ("int64", "float32") and (shape == [] or shape is None):
                         shape = [1]
                     features[k] = {"dtype": dtype, "shape": shape}
+                    if k == "observation.state" and shape:
+                        state_dim = shape[0]
             # 相机字段
             for cam in camera_names:
                 img_shape = img_shapes[cam]
@@ -242,9 +287,9 @@ def convert_expand_to_lerobot_batch(
                 efforts = []
                 grippers = []
                 for j in joints_list:
-                    pos = list(j.get("position", []))
-                    vel = list(j.get("velocity", []))
-                    eff = list(j.get("effort", []))
+                    pos = np.array(j.get("position", []), dtype=np.float32).reshape(-1).tolist()
+                    vel = np.array(j.get("velocity", []), dtype=np.float32).reshape(-1).tolist()
+                    eff = np.array(j.get("effort", []), dtype=np.float32).reshape(-1).tolist()
                     g_val = j.get("gripper")
                     if g_val is not None:
                         g_arr = np.array(g_val, dtype=np.float32).reshape(-1)
@@ -253,29 +298,52 @@ def convert_expand_to_lerobot_batch(
                     velocities.extend(vel)
                     efforts.extend(eff)
                 # observation.state = [positions..., velocities..., efforts...]
-                obs_state = np.array(positions + velocities + efforts, dtype=np.float32)
-                act = np.array(positions, dtype=np.float32)
+                pos_arr = to_fixed_float32(positions, joint_dim)
+                vel_arr = to_fixed_float32(velocities, joint_dim)
+                eff_arr = to_fixed_float32(efforts, joint_dim)
+                if gripper_dim is not None:
+                    gripper_arr = to_fixed_float32(grippers, gripper_dim)
+                elif grippers:
+                    gripper_arr = np.array(grippers, dtype=np.float32)
+                else:
+                    gripper_arr = None
+                if gripper_arr is not None:
+                    obs_state = np.concatenate((pos_arr, gripper_arr, vel_arr, eff_arr)).astype(np.float32)
+                else:
+                    obs_state = np.concatenate((pos_arr, vel_arr, eff_arr)).astype(np.float32)
+                act = np.concatenate((pos_arr, gripper_arr)).astype(np.float32) if gripper_arr is not None else pos_arr
                 meta["observation.state"] = obs_state
                 meta["action"] = act
-                meta["effort"] = np.array(efforts, dtype=np.float32)
-                if grippers:
-                    if gripper_dim is not None and len(grippers) != gripper_dim:
-                        raise ValueError(f"episode {episode_index} frame {i} gripper dim mismatch: expected {gripper_dim}, got {len(grippers)}")
-                    meta["gripper"] = np.array(grippers, dtype=np.float32)
+                meta["effort"] = eff_arr
+                if gripper_arr is not None:
+                    meta["gripper"] = gripper_arr
+                if action_dim is None:
+                    action_dim = int(act.shape[0])
+                if state_dim is None:
+                    state_dim = int(obs_state.shape[0])
             # tactiles（如有）
             if "tactiles" in features_list[i]:
                 meta["tactiles"] = features_list[i]["tactiles"]
             # gripper（顶层字段，若未在 joints 中解析）
             if "gripper" in features_list[i] and "gripper" not in meta:
-                g_arr = np.array(features_list[i]["gripper"], dtype=np.float32).reshape(-1)
-                if gripper_dim is not None and len(g_arr) != gripper_dim:
-                    raise ValueError(f"episode {episode_index} frame {i} gripper dim mismatch: expected {gripper_dim}, got {len(g_arr)}")
+                g_arr = to_fixed_float32(features_list[i]["gripper"], gripper_dim)
                 meta["gripper"] = g_arr
+            if gripper_dim is not None and "gripper" not in meta:
+                meta["gripper"] = np.zeros((gripper_dim,), dtype=np.float32)
             # 兼容原有 observation/action 字段
             if "action" in features_list[i] and "action" not in meta:
-                meta["action"] = features_list[i]["action"]
+                target_action_dim = action_dim if action_dim is not None else joint_dim
+                meta["action"] = to_fixed_float32(features_list[i]["action"], target_action_dim)
             if "observation" in features_list[i]:
                 obs_flat = flatten_dict(features_list[i]["observation"], parent_key="observation")
+                if "observation.state" in obs_flat:
+                    if "observation.state" in meta:
+                        obs_flat.pop("observation.state")
+                    else:
+                        target_state_dim = state_dim
+                        if target_state_dim is None and joint_dim is not None:
+                            target_state_dim = joint_dim * 3 + (gripper_dim or 0)
+                        obs_flat["observation.state"] = to_fixed_float32(obs_flat["observation.state"], target_state_dim)
                 meta.update(obs_flat)
             frames.append(meta)
         # 为 save_episode 构造 episode_data（使用 frames 列表包装并包含 size/task/episode_index）
@@ -321,6 +389,10 @@ def convert_expand_to_lerobot_batch(
         dataset.save_episode(episode_data=episode_data, encode_videos=False)
         t5 = time.time()
         print(f"[INFO] Saved episode {episode_index} to {lerobot_root}，耗时: {t5-t4:.3f}s")
+    if not encode_videos:
+        print("[INFO] 跳过视频编码（encode_videos=False）")
+        return
+
     # exit(1)
     # 分批顺序编码视频
     print(f"[INFO] 开始分批编码视频，每批 {batch_encode_num} 个episode")
@@ -367,9 +439,10 @@ def convert_expand_to_lerobot_batch(
 
 if __name__ == "__main__":
     # 示例用法
-    lerobot_root = "/home/kleist/Documents/Database/test_0126/"
-    episodes_root = "/home/kleist/jemotor/log1/"  # 传入包含多个episode_xxxxxx的根目录
+    lerobot_root = "/home/kleist/Documents/Database/test_0207_gripper/"
+    episodes_root = "/media/kleist/NewNTFS/0207_log/"  # 传入包含多个episode_xxxxxx的根目录
     task = "Pick up the PCB board from the conveyor belt and place it into the yellow container."
     resume = False
+    encode_videos = False
     target_meta_file_name = "meta.jsonl"
-    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume,target_meta_file_name = target_meta_file_name)
+    convert_expand_to_lerobot_batch(episodes_root, lerobot_root, task, resume=resume,target_meta_file_name = target_meta_file_name, encode_videos = encode_videos)
